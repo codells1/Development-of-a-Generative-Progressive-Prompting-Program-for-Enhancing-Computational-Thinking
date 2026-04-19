@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Computational Thinking</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="grid">
+
+        <!-- 왼쪽 전체: 코드 -->
+        <div class="quadrant code-panel">
+            <div class="quadrant-header">
+                <span class="label">코드 예제</span>
+                <input type="text" id="topic-input" placeholder="주제 입력 후 Enter (예: 반복문)" onkeydown="if(event.key==='Enter') generateCode()">
+            </div>
+            <pre id="code-display"><code class="placeholder">주제를 입력하고 Enter를 누르세요.</code></pre>
+        </div>
+
+        <!-- 오른쪽 상단: 문제 생성 -->
+        <div class="quadrant problem-panel">
+            <div class="quadrant-header">
+                <span class="label">문제</span>
+            </div>
+            <div id="problem-display" class="text-display placeholder">코드가 생성되면 자동으로 문제가 만들어집니다.</div>
+        </div>
+
+        <!-- 오른쪽 하단: 챗봇 -->
+        <div class="quadrant chat-panel">
+            <div class="quadrant-header">
+                <span class="label">챗봇</span>
+            </div>
+            <div id="chat-messages"></div>
+            <div class="chat-input-area">
+                <input type="text" id="chat-input" placeholder="메시지를 입력하세요..." onkeydown="if(event.key==='Enter') sendMessage()">
+                <button onclick="sendMessage()">전송</button>
+            </div>
+        </div>
+
+    </div>
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>
