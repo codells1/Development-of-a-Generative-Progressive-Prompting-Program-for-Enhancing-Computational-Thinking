@@ -2,8 +2,26 @@ const chatHistory = [];
 const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 let currentCodeContext = null;
 
+async function checkStatus() {
+    const el = document.getElementById("lm-status");
+    try {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        if (data.connected) {
+            el.textContent = "● 연결됨";
+            el.style.color = "#38a169";
+        } else {
+            el.textContent = "● 연결 안 됨";
+            el.style.color = "#e53e3e";
+        }
+    } catch {
+        el.textContent = "● 연결 안 됨";
+        el.style.color = "#e53e3e";
+    }
+}
+
 async function generateCode() {
-    const topic = document.getElementById("topic-input").value.trim() || "Python 기초";
+    const topic = document.getElementById("topic-input")?.value.trim() || "Python 기초";
     const codeBlock = document.getElementById("code-display");
     const problemDisplay = document.getElementById("problem-display");
 
@@ -28,14 +46,11 @@ async function generateCode() {
 
     codeBlock.innerHTML = `<code>${escapeHtml(data.code)}</code>`;
     currentCodeContext = topic;
-
-    // 코드 생성 직후 자동으로 문제 생성
-    generateProblem(data.code);
+    generateProblems(data.code);
 }
 
-async function generateProblem(code) {
-    const problemDisplay = document.getElementById("problem-display");
-
+// ── 문제 생성 (5개 고정 순서로 전체 표시) ────────────────
+async function generateProblems(code) {
     const res = await fetch("/api/generate-problem", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -43,6 +58,7 @@ async function generateProblem(code) {
     });
 
     const data = await res.json();
+    const problemDisplay = document.getElementById("problem-display");
     problemDisplay.className = "text-display";
 
     if (data.error) {
@@ -52,36 +68,64 @@ async function generateProblem(code) {
     }
 
     problemDisplay.style.color = "";
-    problemDisplay.textContent = data.problem;
+    const total = data.problems.length;
+    document.getElementById("problem-count").textContent = `[1/${total}]`;
+    problemDisplay.innerHTML = data.problems
+        .map((p, i) => `<div class="problem-item"><span class="problem-num">[${i + 1}/${total}]</span>${escapeHtml(p)}</div>`)
+        .join("");
 }
 
+// ── 챗봇 (스트리밍) ──────────────────────────────────────
 async function sendMessage() {
     const input = document.getElementById("chat-input");
     const message = input.value.trim();
     if (!message) return;
 
     input.value = "";
+    input.disabled = true;
     appendBubble("user", message);
     chatHistory.push({ role: "user", content: message });
 
-    const loadingBubble = appendBubble("assistant", "답변 생성 중", true);
+    const bubble = appendBubble("assistant", "");
+    let fullReply = "";
 
-    const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: chatHistory, session_id: sessionId, code_context: currentCodeContext }),
-    });
+    try {
+        const res = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages: chatHistory, session_id: sessionId, code_context: currentCodeContext }),
+        });
 
-    const data = await res.json();
-    loadingBubble.remove();
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
 
-    if (data.error) {
-        appendBubble("error", data.error);
-        return;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const lines = decoder.decode(value).split("\n");
+            for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                const payload = JSON.parse(line.slice(6));
+
+                if (payload.error) {
+                    bubble.className = "chat-bubble error";
+                    bubble.textContent = payload.error;
+                    return;
+                }
+                if (payload.delta) {
+                    fullReply += payload.delta;
+                    bubble.textContent = fullReply;
+                    document.getElementById("chat-messages").scrollTop = 9999;
+                }
+            }
+        }
+
+        chatHistory.push({ role: "assistant", content: fullReply });
+    } finally {
+        input.disabled = false;
+        input.focus();
     }
-
-    chatHistory.push({ role: "assistant", content: data.reply });
-    appendBubble("assistant", data.reply);
 }
 
 function appendBubble(role, text, isLoading = false) {
@@ -100,3 +144,6 @@ function escapeHtml(str) {
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
 }
+
+// 초기 실행
+checkStatus();

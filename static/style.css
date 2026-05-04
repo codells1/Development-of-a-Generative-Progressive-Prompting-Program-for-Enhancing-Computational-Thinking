@@ -52,6 +52,44 @@ body {
     color: #4a5568;
     letter-spacing: 0.05em;
     white-space: nowrap;
+    flex: 1;
+}
+
+.stage-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.stage-indicator {
+    font-size: 13px;
+    font-weight: 600;
+    color: #4f6ef7;
+    min-width: 70px;
+    text-align: center;
+}
+
+.nav-btn {
+    background: none;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    color: #4a5568;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 2px 8px;
+    transition: background 0.15s;
+}
+
+.nav-btn:hover {
+    background: #edf0fb;
+    border-color: #4f6ef7;
+    color: #4f6ef7;
+}
+
+.nav-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
 }
 
 input[type="text"] {
@@ -174,6 +212,39 @@ pre {
 
 .chat-input-area input {
     flex: 1;
+}
+
+/* 문제 목록 */
+.problem-item {
+    display: flex;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid #e3e6ed;
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+.problem-item:last-child {
+    border-bottom: none;
+}
+
+.lm-status {
+    font-size: 12px;
+    font-weight: 600;
+    color: #a0aec0;
+    margin-left: auto;
+}
+
+.problem-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: #4f6ef7;
+}
+
+.problem-num {
+    font-weight: 700;
+    color: #4f6ef7;
+    min-width: 42px;
 }
 
 /* 로딩 */
