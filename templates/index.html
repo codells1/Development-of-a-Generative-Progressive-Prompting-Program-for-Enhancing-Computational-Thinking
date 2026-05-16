@@ -7,30 +7,36 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+
+    <div id="loading-overlay">
+        <div class="loading-box">
+            <div class="spinner"></div>
+            <p id="loading-text">코드 만드는 중...</p>
+        </div>
+    </div>
+
     <div class="grid">
 
-        <!-- 왼쪽 전체: 코드 -->
         <div class="quadrant code-panel">
             <div class="quadrant-header">
                 <span class="label">코드 예제</span>
-                <!-- 단계 표시 (주석처리)
-                <span id="stage-indicator" class="stage-indicator">1 / 4단계</span>
-                -->
-                <input type="text" id="topic-input" placeholder="주제 입력 후 Enter">
-                <button onclick="generateCode()">생성</button>
+                <button onclick="generateCode()">다시 생성</button>
             </div>
-            <pre id="code-display"><code class="placeholder">주제를 입력하고 생성 버튼을 누르세요.</code></pre>
+            <pre id="code-display"><code></code></pre>
         </div>
 
-        <!-- 오른쪽 상단: 문제 -->
         <div class="quadrant problem-panel">
             <div class="quadrant-header">
-                <span class="label">문제 <span id="problem-count" class="problem-count"></span></span>
+                <span class="label">문제</span>
+                <span id="problem-count" class="problem-count"></span>
             </div>
-            <div id="problem-display" class="text-display placeholder">코드가 생성되면 자동으로 문제가 만들어집니다.</div>
+            <div id="problem-display" class="text-display placeholder"></div>
+            <div id="answer-area" class="answer-area">
+                <textarea id="answer-input" rows="3" placeholder="답변을 입력하세요..."></textarea>
+                <button onclick="submitAnswer()">제출</button>
+            </div>
         </div>
 
-        <!-- 오른쪽 하단: 챗봇 -->
         <div class="quadrant chat-panel">
             <div class="quadrant-header">
                 <span class="label">챗봇</span>

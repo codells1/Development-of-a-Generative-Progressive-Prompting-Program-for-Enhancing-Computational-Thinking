@@ -3,3 +3,15 @@ __pycache__/
 *.pyo
 .env
 conversations.json
+
+# RAG — 생성된 FAISS 인덱스 (로컬에서 rebuild)
+rag_db/
+
+# RAG — 사용자 로컬 문서 (개인 파일 제외, 폴더 구조만 유지)
+rag_docs/code_examples/*
+rag_docs/problem_templates/*
+!rag_docs/code_examples/.gitkeep
+!rag_docs/problem_templates/.gitkeep
+
+# Claude Code 로컬 설정
+.claude/

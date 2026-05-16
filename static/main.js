@@ -1,6 +1,15 @@
 const chatHistory = [];
 const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-let currentCodeContext = null;
+let currentCode = null;
+let currentProblemIndex = 0;
+let previousProblems = [];
+const TOTAL_PROBLEMS = 5;
+
+function setOverlay(visible, text = "") {
+    const overlay = document.getElementById("loading-overlay");
+    document.getElementById("loading-text").textContent = text;
+    overlay.classList.toggle("hidden", !visible);
+}
 
 async function checkStatus() {
     const el = document.getElementById("lm-status");
@@ -21,61 +30,122 @@ async function checkStatus() {
 }
 
 async function generateCode() {
-    const topic = document.getElementById("topic-input")?.value.trim() || "Python 기초";
+    const topic = "Python 기초";
     const codeBlock = document.getElementById("code-display");
     const problemDisplay = document.getElementById("problem-display");
+    const answerArea = document.getElementById("answer-area");
 
-    codeBlock.innerHTML = '<code class="loading">생성 중</code>';
-    problemDisplay.className = "text-display placeholder loading";
-    problemDisplay.textContent = "문제 생성 중";
+    currentProblemIndex = 0;
+    previousProblems = [];
 
-    const res = await fetch("/api/generate-code", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic }),
-    });
+    setOverlay(true, "코드 만드는 중...");
+    codeBlock.innerHTML = "<code></code>";
+    problemDisplay.className = "text-display placeholder";
+    problemDisplay.textContent = "";
+    document.getElementById("problem-count").textContent = "";
+    answerArea.classList.remove("visible");
 
-    const data = await res.json();
+    try {
+        const res = await fetch("/api/generate-code", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ topic }),
+        });
+        const data = await res.json();
 
-    if (data.error) {
-        codeBlock.innerHTML = `<code style="color:#e53e3e">${data.error}</code>`;
-        problemDisplay.className = "text-display";
-        problemDisplay.textContent = "";
-        return;
+        if (data.error) {
+            codeBlock.innerHTML = `<code style="color:#e53e3e">${data.error}</code>`;
+            return;
+        }
+
+        codeBlock.innerHTML = `<code>${escapeHtml(data.code)}</code>`;
+        currentCode = data.code;
+
+        setOverlay(true, `문제 1 / ${TOTAL_PROBLEMS} 만드는 중...`);
+        await generateNextProblem();
+    } catch (e) {
+        codeBlock.innerHTML = `<code style="color:#e53e3e">오류: ${e.message}</code>`;
+    } finally {
+        setOverlay(false);
     }
-
-    codeBlock.innerHTML = `<code>${escapeHtml(data.code)}</code>`;
-    currentCodeContext = topic;
-    generateProblems(data.code);
 }
 
-// ── 문제 생성 (5개 고정 순서로 전체 표시) ────────────────
-async function generateProblems(code) {
-    const res = await fetch("/api/generate-problem", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-    });
-
-    const data = await res.json();
+async function generateNextProblem() {
     const problemDisplay = document.getElementById("problem-display");
-    problemDisplay.className = "text-display";
+    const answerArea = document.getElementById("answer-area");
+    const answerInput = document.getElementById("answer-input");
 
-    if (data.error) {
+    try {
+        const res = await fetch("/api/generate-problem", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                code: currentCode,
+                problem_index: currentProblemIndex,
+                previous_problems: previousProblems,
+            }),
+        });
+        const data = await res.json();
+
+        if (data.error) {
+            problemDisplay.className = "text-display";
+            problemDisplay.style.color = "#e53e3e";
+            problemDisplay.textContent = `오류: ${data.error}`;
+            return;
+        }
+
+        const problem = (data.problem || "").trim();
+        if (!problem) {
+            problemDisplay.className = "text-display";
+            problemDisplay.style.color = "#e53e3e";
+            problemDisplay.textContent = "문제를 생성하지 못했습니다.";
+            return;
+        }
+
+        previousProblems.push(problem);
+
+        document.getElementById("problem-count").textContent =
+            `${currentProblemIndex + 1} / ${TOTAL_PROBLEMS}`;
+        problemDisplay.className = "text-display";
+        problemDisplay.style.color = "";
+        problemDisplay.innerHTML = `<div class="problem-item">${escapeHtml(problem)}</div>`;
+
+        answerInput.value = "";
+        answerArea.classList.add("visible");
+        answerInput.focus();
+    } catch (e) {
+        console.error("[문제생성] 오류:", e);
+        problemDisplay.className = "text-display";
         problemDisplay.style.color = "#e53e3e";
-        problemDisplay.textContent = data.error;
+        problemDisplay.textContent = `문제 생성 오류: ${e.message}`;
+    }
+}
+
+async function submitAnswer() {
+    const answerInput = document.getElementById("answer-input");
+    const answer = answerInput.value.trim();
+    if (!answer) return;
+
+    currentProblemIndex++;
+
+    if (currentProblemIndex >= TOTAL_PROBLEMS) {
+        const problemDisplay = document.getElementById("problem-display");
+        const answerArea = document.getElementById("answer-area");
+        document.getElementById("problem-count").textContent = "완료";
+        problemDisplay.className = "text-display";
+        problemDisplay.innerHTML = `<div class="complete-msg">모든 문제를 완료했습니다!</div>`;
+        answerArea.classList.remove("visible");
         return;
     }
 
-    problemDisplay.style.color = "";
-    const total = data.problems.length;
-    document.getElementById("problem-count").textContent = `[1/${total}]`;
-    problemDisplay.innerHTML = data.problems
-        .map((p, i) => `<div class="problem-item"><span class="problem-num">[${i + 1}/${total}]</span>${escapeHtml(p)}</div>`)
-        .join("");
+    setOverlay(true, `문제 ${currentProblemIndex + 1} / ${TOTAL_PROBLEMS} 만드는 중...`);
+    try {
+        await generateNextProblem();
+    } finally {
+        setOverlay(false);
+    }
 }
 
-// ── 챗봇 (스트리밍) ──────────────────────────────────────
 async function sendMessage() {
     const input = document.getElementById("chat-input");
     const message = input.value.trim();
@@ -93,7 +163,11 @@ async function sendMessage() {
         const res = await fetch("/api/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ messages: chatHistory, session_id: sessionId, code_context: currentCodeContext }),
+            body: JSON.stringify({
+                messages: chatHistory,
+                session_id: sessionId,
+                code_context: currentCode,
+            }),
         });
 
         const reader = res.body.getReader();
@@ -107,7 +181,6 @@ async function sendMessage() {
             for (const line of lines) {
                 if (!line.startsWith("data: ")) continue;
                 const payload = JSON.parse(line.slice(6));
-
                 if (payload.error) {
                     bubble.className = "chat-bubble error";
                     bubble.textContent = payload.error;
@@ -128,10 +201,10 @@ async function sendMessage() {
     }
 }
 
-function appendBubble(role, text, isLoading = false) {
+function appendBubble(role, text) {
     const container = document.getElementById("chat-messages");
     const bubble = document.createElement("div");
-    bubble.className = `chat-bubble ${role}${isLoading ? " loading" : ""}`;
+    bubble.className = `chat-bubble ${role}`;
     bubble.textContent = text;
     container.appendChild(bubble);
     container.scrollTop = container.scrollHeight;
@@ -145,5 +218,5 @@ function escapeHtml(str) {
         .replace(/>/g, "&gt;");
 }
 
-// 초기 실행
 checkStatus();
+generateCode();

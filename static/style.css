@@ -22,7 +22,6 @@ body {
     background: #dde1e8;
 }
 
-/* 코드 패널: 왼쪽 전체 높이 */
 .code-panel {
     grid-row: 1 / 3;
 }
@@ -51,45 +50,13 @@ body {
     font-weight: 700;
     color: #4a5568;
     letter-spacing: 0.05em;
-    white-space: nowrap;
     flex: 1;
 }
 
-.stage-nav {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.stage-indicator {
-    font-size: 13px;
+.problem-count {
+    font-size: 12px;
     font-weight: 600;
     color: #4f6ef7;
-    min-width: 70px;
-    text-align: center;
-}
-
-.nav-btn {
-    background: none;
-    border: 1px solid #d1d5db;
-    border-radius: 4px;
-    color: #4a5568;
-    cursor: pointer;
-    font-size: 16px;
-    line-height: 1;
-    padding: 2px 8px;
-    transition: background 0.15s;
-}
-
-.nav-btn:hover {
-    background: #edf0fb;
-    border-color: #4f6ef7;
-    color: #4f6ef7;
-}
-
-.nav-btn:disabled {
-    opacity: 0.3;
-    cursor: not-allowed;
 }
 
 input[type="text"] {
@@ -125,28 +92,26 @@ button:hover {
     background: #3b56d4;
 }
 
-/* 코드 영역 */
 pre {
     flex: 1;
     overflow: auto;
     padding: 16px;
-    font-family: 'Consolas', 'Fira Code', monospace;
-    font-size: 13px;
-    line-height: 1.7;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.6;
     white-space: pre-wrap;
     word-break: break-word;
-    background: #fafbfc;
-    color: #2d3748;
+    background: #ffffff;
+    color: #1e1e1e;
 }
 
-/* 문제 영역 */
 .text-display {
     flex: 1;
     overflow: auto;
-    padding: 16px;
-    font-size: 14px;
-    line-height: 1.9;
-    white-space: pre-wrap;
+    padding: 20px 16px;
+    font-size: 15px;
+    line-height: 1.8;
     color: #2d3748;
 }
 
@@ -155,7 +120,55 @@ pre {
     font-style: italic;
 }
 
-/* 챗봇 */
+.problem-item {
+    font-size: 15px;
+    line-height: 1.8;
+    color: #1a1a2e;
+}
+
+.answer-area {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 14px;
+    background: #f7f8fb;
+    border-top: 1px solid #e3e6ed;
+    flex-shrink: 0;
+}
+
+.answer-area.visible {
+    display: flex;
+}
+
+.answer-area textarea {
+    resize: none;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: 'Segoe UI', sans-serif;
+    line-height: 1.5;
+    outline: none;
+    color: #1a1a2e;
+}
+
+.answer-area textarea:focus {
+    border-color: #4f6ef7;
+    box-shadow: 0 0 0 2px rgba(79,110,247,0.12);
+}
+
+.answer-area button {
+    align-self: flex-end;
+}
+
+.complete-msg {
+    text-align: center;
+    padding: 24px 16px;
+    color: #38a169;
+    font-size: 16px;
+    font-weight: 600;
+}
+
 .chat-panel {
     display: flex;
     flex-direction: column;
@@ -210,24 +223,6 @@ pre {
     flex-shrink: 0;
 }
 
-.chat-input-area input {
-    flex: 1;
-}
-
-/* 문제 목록 */
-.problem-item {
-    display: flex;
-    gap: 10px;
-    padding: 10px 0;
-    border-bottom: 1px solid #e3e6ed;
-    font-size: 14px;
-    line-height: 1.7;
-}
-
-.problem-item:last-child {
-    border-bottom: none;
-}
-
 .lm-status {
     font-size: 12px;
     font-weight: 600;
@@ -235,19 +230,47 @@ pre {
     margin-left: auto;
 }
 
-.problem-count {
-    font-size: 12px;
+#loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 999;
+}
+
+#loading-overlay.hidden {
+    display: none;
+}
+
+.loading-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+}
+
+.spinner {
+    width: 48px;
+    height: 48px;
+    border: 5px solid rgba(255, 255, 255, 0.25);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+}
+
+#loading-text {
+    color: #ffffff;
+    font-size: 18px;
     font-weight: 600;
-    color: #4f6ef7;
+    letter-spacing: 0.03em;
 }
 
-.problem-num {
-    font-weight: 700;
-    color: #4f6ef7;
-    min-width: 42px;
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 
-/* 로딩 */
 .loading::after {
     content: '...';
     animation: dots 1s steps(3, end) infinite;
