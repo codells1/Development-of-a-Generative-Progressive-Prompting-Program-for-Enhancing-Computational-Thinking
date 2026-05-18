@@ -10,8 +10,11 @@ api = Blueprint("api", __name__, url_prefix="/api")
 
 CONVERSATIONS_FILE = os.path.join(os.path.dirname(__file__), "conversations.json")
 
+LM_STUDIO_BASE_URL = "http://localhost:1234/v1"
+LM_STUDIO_MODEL    = "local-model"  # LM Studio에 로드된 모델 자동 참조
+
 client = OpenAI(
-    base_url="http://localhost:1234/v1",
+    base_url=LM_STUDIO_BASE_URL,
     api_key="lm-studio",
 )
 
@@ -27,11 +30,21 @@ SYSTEM_PROBLEM = (
     "Output ONLY the problem sentence. No numbering, no title, no explanation."
 )
 
-SYSTEM_CHAT = (
+SYSTEM_CHAT_BASE = (
     "You are a helpful coding assistant for learners of computational thinking. "
     "Answer questions in Korean clearly and concisely. "
-    "When explaining code, use simple language."
+    "When explaining code, use simple language. "
+    "If the user's question relates to the current code or problem, refer to them directly in your answer."
 )
+
+
+def build_chat_system(code_context: str = None, current_problem: str = None) -> str:
+    system = SYSTEM_CHAT_BASE
+    if code_context:
+        system += f"\n\n[현재 학습 중인 코드]\n{code_context}"
+    if current_problem:
+        system += f"\n\n[현재 풀고 있는 문제]\n{current_problem}"
+    return system
 
 DIFFICULTIES = ["매우 쉬움", "쉬움", "보통", "어려움", "매우 어려움"]
 
@@ -70,9 +83,9 @@ def _extract_from_reasoning(reasoning: str) -> str:
     return candidates[-1] if candidates else ""
 
 
-def call_lm(system: str, user_content: str, max_tokens: int = 1024) -> str:
+def call_lm(system: str, user_content: str, max_tokens: int = 4096) -> str:
     response = client.chat.completions.create(
-        model="local-model",
+        model=LM_STUDIO_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user_content},
@@ -198,16 +211,17 @@ def chat():
     history = data.get("messages", [])
     session_id = data.get("session_id", "unknown")
     code_context = data.get("code_context")
+    current_problem = data.get("current_problem")
 
-    messages = [{"role": "system", "content": SYSTEM_CHAT}] + history
+    messages = [{"role": "system", "content": build_chat_system(code_context, current_problem)}] + history
     full_reply_holder = []
 
     def generate():
         try:
             stream = client.chat.completions.create(
-                model="local-model",
+                model=LM_STUDIO_MODEL,
                 messages=messages,
-                max_tokens=1024,
+                max_tokens=4096,
                 temperature=0.7,
                 stream=True,
             )

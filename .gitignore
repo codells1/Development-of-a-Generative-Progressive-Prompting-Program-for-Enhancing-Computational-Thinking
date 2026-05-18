@@ -15,3 +15,6 @@ rag_docs/problem_templates/*
 
 # Claude Code 로컬 설정
 .claude/
+
+# Ollama 테스트용
+Modelfile

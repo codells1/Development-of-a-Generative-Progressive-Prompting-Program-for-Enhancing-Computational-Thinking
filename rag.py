@@ -20,7 +20,7 @@ from typing import List, Optional
 
 # ── 설정 ──────────────────────────────────────────────────────
 LM_BASE_URL   = "http://localhost:1234/v1"
-EMBED_MODEL   = "nomic-ai/nomic-embed-text-v1.5-GGUF"
+EMBED_MODEL   = "BAAI/bge-m3"  # LM Studio에 로드된 임베딩 모델명
 DOCS_DIR      = os.path.join(os.path.dirname(__file__), "rag_docs")   # 파일 보관 폴더
 DB_DIR        = os.path.join(os.path.dirname(__file__), "rag_db")     # FAISS 인덱스 폴더
 CHUNK_SIZE    = 200
@@ -51,7 +51,7 @@ except ImportError as e:
 
 # ── LM Studio 임베딩 (reference: MyEmbeddings) ────────────────
 if _AVAILABLE:
-    class LMStudioEmbeddings(Embeddings):
+    class OllamaEmbeddings(Embeddings):
         def __init__(self):
             self._client = OpenAI(base_url=LM_BASE_URL, api_key="lm-studio")
 
@@ -69,7 +69,7 @@ if _AVAILABLE:
         def embed_query(self, text: str) -> List[float]:
             return self.embed_documents([text])[0]
 
-    _embeddings = LMStudioEmbeddings()
+    _embeddings = OllamaEmbeddings()
 
     _splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
@@ -89,11 +89,13 @@ else:
 def _load_file(file_path: str) -> List:
     """TXT/PDF 파일을 LangChain Document 리스트로 로드 후 청킹."""
     ext = os.path.splitext(file_path)[1].lower()
-    loaders = {".txt": TextLoader, ".pdf": PyPDFLoader}
-    Loader = loaders.get(ext)
-    if Loader is None:
+    if ext == ".txt":
+        loader = TextLoader(file_path, encoding="utf-8")
+    elif ext == ".pdf":
+        loader = PyPDFLoader(file_path)
+    else:
         raise ValueError(f"지원하지 않는 형식: {ext}")
-    return Loader(file_path).load_and_split(text_splitter=_splitter)
+    return loader.load_and_split(text_splitter=_splitter)
 
 
 def _save(collection: str):

@@ -1,9 +1,25 @@
 const chatHistory = [];
 const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 let currentCode = null;
+let currentProblem = null;
 let currentProblemIndex = 0;
 let previousProblems = [];
 const TOTAL_PROBLEMS = 5;
+
+const TOPICS = [
+    "변수와 자료형",
+    "입력과 출력",
+    "조건문",
+    "for 반복문",
+    "while 반복문",
+    "함수",
+    "리스트 조작",
+    "문자열 조작",
+    "딕셔너리",
+    "재귀함수",
+    "예외처리",
+];
+let currentTopicIndex = 0;
 
 function setOverlay(visible, text = "") {
     const overlay = document.getElementById("loading-overlay");
@@ -30,15 +46,19 @@ async function checkStatus() {
 }
 
 async function generateCode() {
-    const topic = "Python 기초";
+    const topic = TOPICS[currentTopicIndex];
+    currentTopicIndex = (currentTopicIndex + 1) % TOPICS.length;
+
     const codeBlock = document.getElementById("code-display");
     const problemDisplay = document.getElementById("problem-display");
     const answerArea = document.getElementById("answer-area");
 
     currentProblemIndex = 0;
     previousProblems = [];
+    currentProblem = null;
 
-    setOverlay(true, "코드 만드는 중...");
+    document.getElementById("topic-label").textContent = topic;
+    setOverlay(true, `${topic} 코드 만드는 중...`);
     codeBlock.innerHTML = "<code></code>";
     problemDisplay.className = "text-display placeholder";
     problemDisplay.textContent = "";
@@ -103,6 +123,7 @@ async function generateNextProblem() {
         }
 
         previousProblems.push(problem);
+        currentProblem = problem;
 
         document.getElementById("problem-count").textContent =
             `${currentProblemIndex + 1} / ${TOTAL_PROBLEMS}`;
@@ -167,6 +188,7 @@ async function sendMessage() {
                 messages: chatHistory,
                 session_id: sessionId,
                 code_context: currentCode,
+                current_problem: currentProblem,
             }),
         });
 
