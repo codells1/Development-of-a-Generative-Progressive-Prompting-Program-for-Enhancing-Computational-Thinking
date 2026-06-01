@@ -20,3 +20,6 @@ rag_docs/problem_templates/*
 
 # Ollama 테스트용
 Modelfile
+
+# 세션 피드백 데이터 (로컬 생성)
+feedback.json

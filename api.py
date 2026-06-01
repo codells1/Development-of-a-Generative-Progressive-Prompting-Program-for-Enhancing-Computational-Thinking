@@ -1,59 +1,28 @@
 from flask import Blueprint, request, jsonify, Response, stream_with_context
-from openai import OpenAI
 import json
 import re
 import os
 from datetime import datetime
 import rag as rag_store
+import llm
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
 CONVERSATIONS_FILE = os.path.join(os.path.dirname(__file__), "conversations.json")
 
-LM_STUDIO_BASE_URL = "http://localhost:1234/v1"
-LM_STUDIO_MODEL    = "local-model"  # LM Studio에 로드된 모델 자동 참조
-
-client = OpenAI(
-    base_url=LM_STUDIO_BASE_URL,
-    api_key="lm-studio",
-)
-
-SYSTEM_CODE = (
-    "You are a coding tutor for beginners. "
-    "Return ONLY a runnable Python code block. "
-    "No comments, no explanation, no markdown fences."
-)
-
-SYSTEM_PROBLEM = (
-    "You are a coding tutor. "
-    "Write exactly ONE learning problem in Korean based on the given code. "
-    "Output ONLY the problem sentence. No numbering, no title, no explanation."
-)
-
-SYSTEM_CHAT_BASE = (
-    "You are a helpful coding assistant for learners of computational thinking. "
-    "Answer questions in Korean clearly and concisely. "
-    "When explaining code, use simple language. "
-    "If the user's question relates to the current code or problem, refer to them directly in your answer."
-)
-
-
-def build_chat_system(code_context: str = None, current_problem: str = None) -> str:
-    system = SYSTEM_CHAT_BASE
-    if code_context:
-        system += f"\n\n[현재 학습 중인 코드]\n{code_context}"
-    if current_problem:
-        system += f"\n\n[현재 풀고 있는 문제]\n{current_problem}"
-    return system
-
 STAGE_MAP = {
-    0: "순차/조건",
-    1: "반복문/리스트",
+    0: "변수·연산·조건",
+    1: "반복·리스트",
     2: "함수",
     3: "알고리즘",
 }
 
 FUSION_TOPIC = "융합"
+
+CT_SKILLS     = ("분해", "패턴인식", "추상화", "알고리즘적사고")
+PROMPT_SKILLS = ("명확성", "구체성", "맥락제공", "관련성", "자기주도성", "발전성")
+
+FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback.json")
 
 CT_MAP = {
     0: {"ct_skill": "분해",           "difficulty": "매우쉬움"},
@@ -63,61 +32,6 @@ CT_MAP = {
     4: {"ct_skill": "통합",           "difficulty": "매우어려움"},
 }
 
-# 한국어 문장 종결 패턴
-_KO_ENDING = re.compile(r"[가-힣]+(?:세요|요\?|까요\?|인가요\?|볼까요\?|보세요\.?|해요\.?|십시오\.?)\s*$")
-
-
-def _is_mostly_korean(text: str) -> bool:
-    ko = len(re.findall(r"[가-힣]", text))
-    en = len(re.findall(r"[a-zA-Z]", text))
-    return ko > 0 and ko >= en
-
-
-def _extract_from_reasoning(reasoning: str) -> str:
-    """reasoning_content에서 한국어 문제 문장 하나를 추출."""
-    candidates = []
-    for line in reasoning.splitlines():
-        line = line.strip().lstrip("*- ").strip()
-        # 레이블 뒤 텍스트 추출 (Draft: ..., Refined: ... 등)
-        m = re.search(
-            r"(?:Better Draft|Final Draft[^:]*|Revised[^:]*|Refinement|Draft)\s*:?\*?\s*(.+)",
-            line, re.IGNORECASE,
-        )
-        text = m.group(1).strip().lstrip("*").strip() if m else line
-
-        if len(text) < 10:
-            continue
-        # 한국어가 주를 이루는 문장만 수집
-        if _is_mostly_korean(text):
-            candidates.append(text)
-
-    # 마지막(가장 정제된) 후보 반환
-    for text in reversed(candidates):
-        if _KO_ENDING.search(text) or "?" in text:
-            return text
-    return candidates[-1] if candidates else ""
-
-
-def call_lm(system: str, user_content: str, max_tokens: int = 4096) -> str:
-    response = client.chat.completions.create(
-        model=LM_STUDIO_MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_content},
-        ],
-        max_tokens=max_tokens,
-        temperature=0.7,
-        stream=False,
-    )
-    choice = response.choices[0]
-    content = (choice.message.content or "").strip()
-
-    if not content:
-        reasoning = getattr(choice.message, "reasoning_content", None) or ""
-        content = _extract_from_reasoning(reasoning)
-
-    return content
-
 
 def strip_fences(text: str) -> str:
     text = re.sub(r"^```[a-zA-Z]*\n?", "", text.strip())
@@ -125,10 +39,74 @@ def strip_fences(text: str) -> str:
     return text.strip()
 
 
+def _extract_json(raw: str) -> dict:
+    """응답에서 가장 바깥 { } JSON 블록을 추출·파싱한다."""
+    m = re.search(r'\{.*\}', raw, re.DOTALL)
+    if not m:
+        raise ValueError("JSON 블록 없음")
+    return json.loads(m.group())
+
+
+def save_feedback(session_id: str, topic: str, ct: dict, prompt: dict) -> None:
+    """CT 4요소 점수 + 프롬프팅 6요소 점수를 feedback.json에 누적 저장한다."""
+    try:
+        records = []
+        if os.path.exists(FEEDBACK_FILE):
+            with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
+                records = json.load(f)
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        records.append({
+            "session_id":      session_id,
+            "timestamp":       now,
+            "topic":           topic,
+            "ct_scores":       {k: ct.get(k, 1) for k in CT_SKILLS},
+            "weak_ct":         ct.get("weak_ct", ""),
+            "ct_feedback":     ct.get("feedback", ""),
+            "prompt_scores":   {k: prompt.get(k, 1) for k in PROMPT_SKILLS},
+            "prompt_score":    prompt.get("overall", 0),
+            "prompt_feedback": prompt.get("feedback", ""),
+        })
+
+        with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"피드백 저장 오류: {e}")
+
+
+def _latest_feedback(session_id: str) -> dict | None:
+    """주어진 session_id의 가장 최근 피드백을 반환한다. 없으면 None."""
+    if not os.path.exists(FEEDBACK_FILE):
+        return None
+    try:
+        with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
+            records = json.load(f)
+        matches = [r for r in records if r.get("session_id") == session_id]
+        return matches[-1] if matches else None
+    except Exception:
+        return None
+
+
+def _parse_mcq(raw: str) -> dict:
+    """MCQ JSON 파싱 + 구조 검증. 실패 시 ValueError."""
+    m = re.search(r'\{.*\}', raw, re.DOTALL)
+    if not m:
+        raise ValueError("JSON 블록 없음")
+    data = json.loads(m.group())
+    if not data.get("question"):
+        raise ValueError("question 필드 없음")
+    opts = data.get("options", [])
+    if not (isinstance(opts, list) and len(opts) == 4):
+        raise ValueError(f"options 4개 필요 (현재 {len(opts)}개)")
+    if data.get("answer") not in ("A", "B", "C", "D"):
+        raise ValueError(f"answer 라벨 오류: {data.get('answer')!r}")
+    return data
+
+
 @api.route("/status", methods=["GET"])
 def status():
     try:
-        models = client.models.list()
+        models = llm._client.models.list()
         return jsonify({"connected": True, "models": [m.id for m in models.data]})
     except Exception:
         return jsonify({"connected": False, "models": []})
@@ -142,20 +120,20 @@ def generate_code():
 
     if is_fusion:
         topic = FUSION_TOPIC
-        instruction = "여러 프로그래밍 개념(순차/조건, 반복/리스트, 함수, 알고리즘)을 2개 이상 결합한 종합 예제 코드를 작성해줘."
+        ctx = rag_store.retrieve("code_examples", topic)
+        try:
+            raw = llm.call_code_gen_fusion(ctx)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
     else:
-        topic = STAGE_MAP.get(int(stage), "순차/조건")
-        instruction = f"'{topic}'을 보여주는 간단한 예제 코드를 작성해줘."
+        topic = STAGE_MAP.get(int(stage), "변수·연산·조건")
+        ctx = rag_store.retrieve("code_examples", topic)
+        try:
+            raw = llm.call_code_gen(topic, ctx)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 503
 
-    ctx = rag_store.retrieve("code_examples", topic)
-    ctx_block = f"\n\n[참고 예제]\n{ctx}" if ctx else ""
-
-    try:
-        user_msg = f"/no_think [주제: {topic}]{ctx_block}\n\n{instruction}"
-        raw = call_lm(SYSTEM_CODE, user_msg)
-        return jsonify({"code": strip_fences(raw), "topic": topic})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 503
+    return jsonify({"code": strip_fences(raw), "topic": topic})
 
 
 @api.route("/generate-problem", methods=["POST"])
@@ -165,49 +143,28 @@ def generate_problem():
     problem_index = data.get("problem_index", 0)
     previous = data.get("previous_problems", [])
 
-    ct_info = CT_MAP[min(problem_index, 4)]
-    ct_skill = ct_info["ct_skill"]
+    ct_info   = CT_MAP[min(problem_index, 4)]
+    ct_skill  = ct_info["ct_skill"]
     difficulty = ct_info["difficulty"]
 
-    ctx = rag_store.retrieve("problem_templates", f"{ct_skill} {difficulty} {code[:300]}")
-    ctx_block = f"\n\n[참고 템플릿]\n{ctx}" if ctx else ""
+    templates = rag_store.retrieve("problem_templates", f"{ct_skill} {difficulty} {code[:300]}")
 
-    prev_text = ""
-    if previous:
-        prev_text = "\n\n[이미 출제된 문제 - 중복 금지]\n" + "\n".join(f"- {p}" for p in previous)
+    last_error = None
+    for attempt in range(2):
+        try:
+            raw = llm.call_problem_gen(code, ct_skill, difficulty, templates, previous, problem_index)
+            problem_data = _parse_mcq(raw)
+            problem_data["ct_skill"]   = ct_skill
+            problem_data["difficulty"] = difficulty
+            return jsonify(problem_data)
+        except Exception as e:
+            last_error = e
 
-    prompt = (
-        f"/no_think 다음 파이썬 코드를 읽고 {ct_skill} 능력을 측정하는 객관식 문제 1개를 만들어라.\n\n"
-        f"[CT 요소: {ct_skill}]\n"
-        f"[난이도: {difficulty}] (총 5문제 중 {problem_index + 1}번째)"
-        f"{ctx_block}"
-        f"{prev_text}\n\n"
-        f"[파이썬 코드]\n{code}\n\n"
-        f"규칙:\n"
-        f"- 보기 4개 (A/B/C/D)\n"
-        f"- 정답과 해설 포함\n"
-        f"- {ct_skill}을 측정하는 질문 방향으로 출제\n"
-        f"- 첫 줄에 문제 질문만 출력"
-    )
-
-    try:
-        raw = call_lm(SYSTEM_PROBLEM, prompt, max_tokens=4096)
-        problem = ""
-        for line in raw.splitlines():
-            line = re.sub(r"^\d+[\.\)\-\:]?\s*", "", line).strip()
-            if line:
-                problem = line
-                break
-        if not problem:
-            problem = raw.strip()
-        return jsonify({"problem": problem, "ct_skill": ct_skill})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 503
+    return jsonify({"error": str(last_error)}), 503
 
 
 @api.route("/rag/status", methods=["GET"])
 def rag_status():
-    """RAG 상태 + 파일 목록 + 벡터 수 반환."""
     return jsonify({
         "available": rag_store._AVAILABLE,
         "embed_model": rag_store.EMBED_MODEL,
@@ -219,7 +176,6 @@ def rag_status():
 
 @api.route("/rag/rebuild", methods=["POST"])
 def rag_rebuild():
-    """rag_docs/ 를 다시 스캔해서 인덱스 재빌드. JSON: {collection?} (없으면 전체)"""
     data = request.get_json(silent=True) or {}
     collection = data.get("collection")
 
@@ -233,6 +189,28 @@ def rag_rebuild():
         return jsonify({"error": str(e)}), 503
 
 
+@api.route("/previous-feedback", methods=["GET"])
+def previous_feedback():
+    """feedback.json의 마지막 항목을 반환한다. 없으면 has_previous: false."""
+    if not os.path.exists(FEEDBACK_FILE):
+        return jsonify({"has_previous": False})
+    try:
+        with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
+            records = json.load(f)
+        if not records:
+            return jsonify({"has_previous": False})
+        last = records[-1]
+        return jsonify({
+            "has_previous": True,
+            "topic":      last.get("topic", ""),
+            "ct_scores":  last.get("ct_scores", {}),
+            "weak_ct":    last.get("weak_ct", ""),
+            "ct_feedback": last.get("ct_feedback", ""),
+        })
+    except Exception:
+        return jsonify({"has_previous": False})
+
+
 @api.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json()
@@ -240,19 +218,14 @@ def chat():
     session_id = data.get("session_id", "unknown")
     code_context = data.get("code_context")
     current_problem = data.get("current_problem")
+    weak_ct = data.get("weak_ct")  # Task 3에서 프론트가 전달; 없으면 None → 표준 프롬프트
 
-    messages = [{"role": "system", "content": build_chat_system(code_context, current_problem)}] + history
+    messages = [{"role": "system", "content": llm.build_chat_system(code_context, current_problem, weak_ct)}] + history
     full_reply_holder = []
 
     def generate():
         try:
-            stream = client.chat.completions.create(
-                model=LM_STUDIO_MODEL,
-                messages=messages,
-                max_tokens=4096,
-                temperature=0.7,
-                stream=True,
-            )
+            stream = llm.stream_chatbot(messages)
             for chunk in stream:
                 delta = chunk.choices[0].delta.content or ""
                 if delta:
@@ -270,51 +243,66 @@ def chat():
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
 
-SYSTEM_EVAL = (
-    "You are an educational assessment AI. "
-    "Evaluate the student's computational thinking and prompting quality based on their answers and chat history. "
-    "Respond ONLY with valid JSON. No other text."
-)
-
-
 @api.route("/evaluate", methods=["POST"])
 def evaluate():
     data = request.get_json()
-    topic = data.get("topic", "")
-    code = data.get("code", "")
-    problems = data.get("problems", [])
-    answers = data.get("answers", [])
+    topic       = data.get("topic", "")
+    code        = data.get("code", "")
+    problems    = data.get("problems", [])
+    answers     = data.get("answers", [])
     chat_history = data.get("chat_history", [])
+    session_id  = data.get("session_id", "unknown")
 
+    # 대화 로그 직렬화 — 분석 대상 자료, messages 맥락 아님
     qa_pairs = ""
     for i, (p, a) in enumerate(zip(problems, answers), 1):
-        qa_pairs += f"\n{i}. [문제] {p}\n   [답변] {a}\n"
-
+        qa_pairs += f"\n{i}. [문제] {p}\n   [학생선택] {a}\n"
     chat_text = ""
     for msg in chat_history:
         role = "학생" if msg["role"] == "user" else "AI"
         chat_text += f"\n{role}: {msg['content']}"
-
-    prompt = (
-        f"/no_think 다음은 Python '{topic}' 주제 학습 중 학생의 문제 답변과 챗봇 대화 내역입니다.\n\n"
+    log_text = (
+        f"학습 주제: {topic}\n\n"
         f"코드 예제:\n{code}\n\n"
-        f"문제와 답변:{qa_pairs}\n"
-        f"챗봇 대화:{chat_text if chat_text else ' (없음)'}\n\n"
-        f"위 내역을 바탕으로 아래 두 가지를 평가해주세요.\n\n"
-        f"1. 컴퓨팅 사고력: 분해(Decomposition), 패턴인식(Pattern Recognition), 추상화(Abstraction), 알고리즘(Algorithm) 측면에서 평가\n"
-        f"2. 프롬프팅 품질: 질문의 명확성, 구체성, 맥락 제공 정도를 평가\n\n"
-        f"반드시 아래 JSON 형식만 출력하세요. 다른 텍스트 없이 JSON만 출력.\n"
-        f'{{"ct_score": 숫자(0~100), "ct_feedback": "한국어 피드백", "prompt_score": 숫자(0~100), "prompt_feedback": "한국어 피드백"}}'
+        f"문제와 학생 답안:{qa_pairs}\n"
+        f"챗봇 대화:{chat_text if chat_text else ' (없음)'}"
     )
 
     try:
-        raw = call_lm(SYSTEM_EVAL, prompt, max_tokens=1024)
-        m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
-        if m:
-            result = json.loads(m.group())
-        else:
-            result = json.loads(raw.strip())
-        return jsonify(result)
+        ct_raw = _extract_json(llm.call_log_analysis(log_text))
+        pr_raw = _extract_json(llm.call_prompt_eval(log_text))
+
+        # CT 4요소 점수 정규화 (1~5 클램핑)
+        ct_scores = {k: max(1, min(5, int(ct_raw.get(k, 1)))) for k in CT_SKILLS}
+
+        # weak_ct 보정: LLM 산출값이 유효 키가 아니면 최솟값 키로 재계산
+        weak_ct = ct_raw.get("weak_ct", "")
+        if weak_ct not in ct_scores:
+            weak_ct = min(ct_scores, key=ct_scores.get)
+
+        # 평균(1~5) → 100점 환산 (프론트 현행 호환)
+        ct_score = round(sum(ct_scores.values()) / len(ct_scores) * 20)
+
+        # 프롬프팅 6요소 점수 정규화
+        prompt_scores = {k: max(1, min(5, int(pr_raw.get(k, 1)))) for k in PROMPT_SKILLS}
+        prompt_score  = round(sum(prompt_scores.values()) / len(prompt_scores) * 20)
+
+        # feedback.json 저장
+        save_feedback(
+            session_id, topic,
+            {**ct_scores, "weak_ct": weak_ct, "feedback": ct_raw.get("feedback", "")},
+            {**prompt_scores, "overall": prompt_score, "feedback": pr_raw.get("feedback", "")},
+        )
+
+        return jsonify({
+            "ct_scores":       ct_scores,          # 4요소 각 점수 (Task 7에서 UI 활용)
+            "weak_ct":         weak_ct,
+            "ct_score":        ct_score,            # 현 프론트용 단일 점수
+            "ct_feedback":     ct_raw.get("feedback", ""),
+            "prompt_scores":   prompt_scores,       # 6요소 각 점수
+            "prompt_score":    prompt_score,
+            "prompt_feedback": pr_raw.get("feedback", ""),
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 503
 

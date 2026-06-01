@@ -8,6 +8,18 @@
 </head>
 <body>
 
+    <div id="session-start-overlay" class="hidden">
+        <div class="session-start-box">
+            <div class="session-start-header">
+                <span class="session-start-title">지난 학습 결과</span>
+                <span class="eval-topic-tag" id="prev-topic"></span>
+            </div>
+            <div class="ct-bar-list" id="prev-ct-scores"></div>
+            <div id="weak-ct-tip" class="weak-ct-tip hidden"></div>
+            <button class="session-start-btn" onclick="startLearning()">학습 시작 →</button>
+        </div>
+    </div>
+
     <div id="eval-overlay" class="hidden">
         <div class="eval-box">
             <div class="eval-header">
@@ -60,8 +72,15 @@
             </div>
             <div id="problem-display" class="text-display placeholder"></div>
             <div id="answer-area" class="answer-area">
-                <textarea id="answer-input" rows="3" placeholder="답변을 입력하세요..."></textarea>
-                <button onclick="submitAnswer()">제출</button>
+                <div id="options-list" class="options-list"></div>
+                <div class="answer-submit-row" id="answer-submit-row">
+                    <button id="submit-btn" onclick="submitAnswer()" disabled>제출</button>
+                </div>
+                <div id="feedback-area" class="hidden">
+                    <div id="feedback-badge" class="feedback-badge"></div>
+                    <p id="feedback-explanation" class="feedback-explanation"></p>
+                    <button onclick="nextProblem()">다음 문제 →</button>
+                </div>
             </div>
         </div>
 

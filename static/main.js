@@ -1,16 +1,82 @@
 const chatHistory = [];
 const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 let currentCode = null;
-let currentProblem = null;
+let currentProblemData = null;   // 현재 MCQ 객체 {question, options, answer, explanation, ct_skill}
 let currentProblemIndex = 0;
-let previousProblems = [];
-let submittedAnswers = [];
+let previousProblems = [];       // 문제 본문 문자열 배열 (중복 방지 + 평가용)
+let submittedAnswers = [];       // 학생 선택 라벨 배열 (A/B/C/D)
+let selectedOption = null;       // 현재 선택된 라벨
 let currentTopic = "";
 const TOTAL_PROBLEMS = 5;
 
-const STAGES = ["순차/조건", "반복문/리스트", "함수", "알고리즘"];
+const STAGES = ["변수·연산·조건", "반복·리스트", "함수", "알고리즘"];
 let currentStage = 0;
 let isFusion = false;
+
+// 수준 2: 직전 세션·단계의 CT 약점 (챗봇 프롬프트 주입용)
+let prevWeakCt = null;
+
+const CT_TIP = {
+    "분해":          "코드를 역할별로 나눠서 각 부분이 어떻게 동작하는지 질문해보세요.",
+    "패턴인식":      "코드에서 반복되는 패턴이나 규칙을 발견하는 질문을 해보세요.",
+    "추상화":        "변수나 함수가 실제로 무엇을 대표하는지 질문해보세요.",
+    "알고리즘적사고": "코드 실행 순서를 단계별로 추적하며 결과를 예측하는 질문을 해보세요.",
+};
+
+async function init() {
+    checkStatus();
+    await loadPreviousFeedback();
+}
+
+async function loadPreviousFeedback() {
+    try {
+        const res = await fetch("/api/previous-feedback");
+        const data = await res.json();
+        if (!data.has_previous) { generateCode(); return; }
+        prevWeakCt = data.weak_ct || null;
+        showSessionStartOverlay(data);
+    } catch {
+        generateCode();
+    }
+}
+
+function showSessionStartOverlay(data) {
+    document.getElementById("prev-topic").textContent = data.topic || "";
+
+    const container = document.getElementById("prev-ct-scores");
+    container.innerHTML = "";
+    const ctScores = data.ct_scores || {};
+    const weakCt = data.weak_ct || "";
+
+    for (const [skill, score] of Object.entries(ctScores)) {
+        const isWeak = skill === weakCt;
+        const row = document.createElement("div");
+        row.className = "ct-bar-row";
+        row.innerHTML =
+            `<span class="ct-bar-label${isWeak ? " weak" : ""}">${escapeHtml(skill)}</span>` +
+            `<div class="ct-bar-track">` +
+            `<div class="ct-bar-fill${isWeak ? " weak" : ""}" style="width:${score / 5 * 100}%"></div>` +
+            `</div>` +
+            `<span class="ct-bar-score">${score}/5</span>`;
+        container.appendChild(row);
+    }
+
+    const tipEl = document.getElementById("weak-ct-tip");
+    if (weakCt && CT_TIP[weakCt]) {
+        tipEl.innerHTML =
+            `지난번 <strong>'${escapeHtml(weakCt)}'</strong>이(가) 약했어요.<br>${escapeHtml(CT_TIP[weakCt])}`;
+        tipEl.classList.remove("hidden");
+    } else {
+        tipEl.classList.add("hidden");
+    }
+
+    document.getElementById("session-start-overlay").classList.remove("hidden");
+}
+
+function startLearning() {
+    document.getElementById("session-start-overlay").classList.add("hidden");
+    generateCode();
+}
 
 function setOverlay(visible, text = "") {
     const overlay = document.getElementById("loading-overlay");
@@ -49,7 +115,8 @@ async function generateCode() {
     currentProblemIndex = 0;
     previousProblems = [];
     submittedAnswers = [];
-    currentProblem = null;
+    currentProblemData = null;
+    selectedOption = null;
 
     document.getElementById("topic-label").textContent = stageLabel;
     setOverlay(true, `${stageLabel} 코드 만드는 중...`);
@@ -86,10 +153,31 @@ async function generateCode() {
     }
 }
 
+function renderOptions(options) {
+    const container = document.getElementById("options-list");
+    container.innerHTML = "";
+    (options || []).forEach((opt, i) => {
+        const label = String.fromCharCode(65 + i);
+        const btn = document.createElement("button");
+        btn.className = "option-btn";
+        btn.dataset.value = label;
+        btn.textContent = opt;
+        btn.onclick = () => selectOption(label);
+        container.appendChild(btn);
+    });
+}
+
+function selectOption(label) {
+    selectedOption = label;
+    document.querySelectorAll(".option-btn").forEach(btn => {
+        btn.classList.toggle("selected", btn.dataset.value === label);
+    });
+    document.getElementById("submit-btn").disabled = false;
+}
+
 async function generateNextProblem() {
     const problemDisplay = document.getElementById("problem-display");
     const answerArea = document.getElementById("answer-area");
-    const answerInput = document.getElementById("answer-input");
 
     try {
         const res = await fetch("/api/generate-problem", {
@@ -110,16 +198,17 @@ async function generateNextProblem() {
             return;
         }
 
-        const problem = (data.problem || "").trim();
-        if (!problem) {
+        currentProblemData = data;
+        const question = (data.question || "").trim();
+        if (!question) {
             problemDisplay.className = "text-display";
             problemDisplay.style.color = "#e53e3e";
             problemDisplay.textContent = "문제를 생성하지 못했습니다.";
             return;
         }
 
-        previousProblems.push(problem);
-        currentProblem = problem;
+        previousProblems.push(question);
+        selectedOption = null;
 
         const ctSkill = data.ct_skill || "";
         document.getElementById("problem-count").textContent =
@@ -128,11 +217,13 @@ async function generateNextProblem() {
         problemDisplay.style.color = "";
         problemDisplay.innerHTML =
             `${ctSkill ? `<div class="ct-skill-badge">${escapeHtml(ctSkill)}</div>` : ""}` +
-            `<div class="problem-item">${escapeHtml(problem)}</div>`;
+            `<div class="problem-item">${escapeHtml(question)}</div>`;
 
-        answerInput.value = "";
+        renderOptions(data.options);
+        document.getElementById("submit-btn").disabled = true;
+        document.getElementById("feedback-area").classList.add("hidden");
+        document.getElementById("answer-submit-row").classList.remove("hidden");
         answerArea.classList.add("visible");
-        answerInput.focus();
     } catch (e) {
         console.error("[문제생성] 오류:", e);
         problemDisplay.className = "text-display";
@@ -141,12 +232,36 @@ async function generateNextProblem() {
     }
 }
 
-async function submitAnswer() {
-    const answerInput = document.getElementById("answer-input");
-    const answer = answerInput.value.trim();
-    if (!answer) return;
+function submitAnswer() {
+    if (!selectedOption || !currentProblemData) return;
 
-    submittedAnswers.push(answer);
+    const isCorrect = selectedOption === currentProblemData.answer;
+    submittedAnswers.push(selectedOption);
+
+    // 선택지 비활성화 + 정답/오답 색상
+    document.querySelectorAll(".option-btn").forEach(btn => {
+        btn.disabled = true;
+        if (btn.dataset.value === currentProblemData.answer) {
+            btn.classList.add("correct");
+        } else if (btn.dataset.value === selectedOption && !isCorrect) {
+            btn.classList.add("wrong");
+        }
+    });
+
+    // 피드백 표시
+    const badge = document.getElementById("feedback-badge");
+    badge.className = "feedback-badge " + (isCorrect ? "feedback-correct" : "feedback-wrong");
+    badge.textContent = isCorrect
+        ? "✓ 정답"
+        : `✗ 오답 — 정답: ${currentProblemData.answer}`;
+    document.getElementById("feedback-explanation").textContent =
+        currentProblemData.explanation || "";
+
+    document.getElementById("answer-submit-row").classList.add("hidden");
+    document.getElementById("feedback-area").classList.remove("hidden");
+}
+
+async function nextProblem() {
     currentProblemIndex++;
 
     if (currentProblemIndex >= TOTAL_PROBLEMS) {
@@ -175,6 +290,7 @@ async function triggerEvaluation() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+                session_id: sessionId,
                 topic: currentTopic,
                 code: currentCode,
                 problems: previousProblems,
@@ -208,6 +324,9 @@ function showEvalResult(data, errorMsg = null) {
         document.getElementById("ct-score-ring").className = "score-ring";
         document.getElementById("prompt-score-ring").className = "score-ring";
     } else {
+        // 수준 2: 이 단계 약점을 다음 단계 챗봇에 즉시 반영
+        if (data.weak_ct) prevWeakCt = data.weak_ct;
+
         const ctScore = parseInt(data.ct_score) || 0;
         const promptScore = parseInt(data.prompt_score) || 0;
         document.getElementById("ct-score").textContent = ctScore;
@@ -270,7 +389,8 @@ async function sendMessage() {
                 messages: chatHistory,
                 session_id: sessionId,
                 code_context: currentCode,
-                current_problem: currentProblem,
+                current_problem: currentProblemData ? currentProblemData.question : null,
+                weak_ct: prevWeakCt,
             }),
         });
 
@@ -334,5 +454,4 @@ function skipToNext() {
     generateCode();
 }
 
-checkStatus();
-generateCode();
+init();
