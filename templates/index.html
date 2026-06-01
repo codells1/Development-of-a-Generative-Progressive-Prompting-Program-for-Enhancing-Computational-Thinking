@@ -8,6 +8,34 @@
 </head>
 <body>
 
+    <div id="eval-overlay" class="hidden">
+        <div class="eval-box">
+            <div class="eval-header">
+                <span class="eval-title">학습 단계 평가 결과</span>
+                <span class="eval-topic-tag" id="eval-topic"></span>
+            </div>
+            <div class="eval-cards">
+                <div class="eval-card">
+                    <div class="score-ring" id="ct-score-ring">
+                        <span id="ct-score">-</span>
+                        <span class="score-label">점</span>
+                    </div>
+                    <h3 class="eval-card-title">컴퓨팅 사고력</h3>
+                    <p class="eval-feedback" id="ct-feedback"></p>
+                </div>
+                <div class="eval-card">
+                    <div class="score-ring" id="prompt-score-ring">
+                        <span id="prompt-score">-</span>
+                        <span class="score-label">점</span>
+                    </div>
+                    <h3 class="eval-card-title">프롬프팅 품질</h3>
+                    <p class="eval-feedback" id="prompt-feedback"></p>
+                </div>
+            </div>
+            <button class="eval-next-btn" onclick="closeEvalAndRestart()">다음 주제 →</button>
+        </div>
+    </div>
+
     <div id="loading-overlay">
         <div class="loading-box">
             <div class="spinner"></div>

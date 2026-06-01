@@ -4,6 +4,8 @@ let currentCode = null;
 let currentProblem = null;
 let currentProblemIndex = 0;
 let previousProblems = [];
+let submittedAnswers = [];
+let currentTopic = "";
 const TOTAL_PROBLEMS = 5;
 
 const TOPICS = [
@@ -48,6 +50,7 @@ async function checkStatus() {
 async function generateCode() {
     const topic = TOPICS[currentTopicIndex];
     currentTopicIndex = (currentTopicIndex + 1) % TOPICS.length;
+    currentTopic = topic;
 
     const codeBlock = document.getElementById("code-display");
     const problemDisplay = document.getElementById("problem-display");
@@ -55,6 +58,7 @@ async function generateCode() {
 
     currentProblemIndex = 0;
     previousProblems = [];
+    submittedAnswers = [];
     currentProblem = null;
 
     document.getElementById("topic-label").textContent = topic;
@@ -147,6 +151,7 @@ async function submitAnswer() {
     const answer = answerInput.value.trim();
     if (!answer) return;
 
+    submittedAnswers.push(answer);
     currentProblemIndex++;
 
     if (currentProblemIndex >= TOTAL_PROBLEMS) {
@@ -154,8 +159,9 @@ async function submitAnswer() {
         const answerArea = document.getElementById("answer-area");
         document.getElementById("problem-count").textContent = "완료";
         problemDisplay.className = "text-display";
-        problemDisplay.innerHTML = `<div class="complete-msg">모든 문제를 완료했습니다!</div>`;
+        problemDisplay.innerHTML = `<div class="complete-msg">모든 문제를 완료했습니다! 평가 중...</div>`;
         answerArea.classList.remove("visible");
+        await triggerEvaluation();
         return;
     }
 
@@ -165,6 +171,70 @@ async function submitAnswer() {
     } finally {
         setOverlay(false);
     }
+}
+
+async function triggerEvaluation() {
+    setOverlay(true, "학습 결과 평가 중...");
+    try {
+        const res = await fetch("/api/evaluate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                topic: currentTopic,
+                code: currentCode,
+                problems: previousProblems,
+                answers: submittedAnswers,
+                chat_history: chatHistory,
+            }),
+        });
+        const data = await res.json();
+        if (data.error) {
+            showEvalResult(null, data.error);
+        } else {
+            showEvalResult(data);
+        }
+    } catch (e) {
+        showEvalResult(null, e.message);
+    } finally {
+        setOverlay(false);
+    }
+}
+
+function showEvalResult(data, errorMsg = null) {
+    const overlay = document.getElementById("eval-overlay");
+    const topicEl = document.getElementById("eval-topic");
+    topicEl.textContent = currentTopic;
+
+    if (errorMsg || !data) {
+        document.getElementById("ct-score").textContent = "?";
+        document.getElementById("prompt-score").textContent = "?";
+        document.getElementById("ct-feedback").textContent = errorMsg || "평가 중 오류가 발생했습니다.";
+        document.getElementById("prompt-feedback").textContent = "";
+        document.getElementById("ct-score-ring").className = "score-ring";
+        document.getElementById("prompt-score-ring").className = "score-ring";
+    } else {
+        const ctScore = parseInt(data.ct_score) || 0;
+        const promptScore = parseInt(data.prompt_score) || 0;
+        document.getElementById("ct-score").textContent = ctScore;
+        document.getElementById("prompt-score").textContent = promptScore;
+        document.getElementById("ct-feedback").textContent = data.ct_feedback || "";
+        document.getElementById("prompt-feedback").textContent = data.prompt_feedback || "";
+        document.getElementById("ct-score-ring").className = "score-ring " + scoreClass(ctScore);
+        document.getElementById("prompt-score-ring").className = "score-ring " + scoreClass(promptScore);
+    }
+
+    overlay.classList.remove("hidden");
+}
+
+function scoreClass(score) {
+    if (score >= 80) return "high";
+    if (score >= 60) return "mid";
+    return "low";
+}
+
+function closeEvalAndRestart() {
+    document.getElementById("eval-overlay").classList.add("hidden");
+    generateCode();
 }
 
 async function sendMessage() {

@@ -20,7 +20,7 @@ from typing import List, Optional
 
 # ── 설정 ──────────────────────────────────────────────────────
 LM_BASE_URL   = "http://localhost:1234/v1"
-EMBED_MODEL   = "BAAI/bge-m3"  # LM Studio에 로드된 임베딩 모델명
+EMBED_MODEL   = "text-embedding-bge-m3"  # LM Studio에 로드된 임베딩 모델명
 DOCS_DIR      = os.path.join(os.path.dirname(__file__), "rag_docs")   # 파일 보관 폴더
 DB_DIR        = os.path.join(os.path.dirname(__file__), "rag_db")     # FAISS 인덱스 폴더
 CHUNK_SIZE    = 200

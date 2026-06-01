@@ -230,6 +230,126 @@ pre {
     margin-left: auto;
 }
 
+#eval-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+#eval-overlay.hidden {
+    display: none;
+}
+
+.eval-box {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 36px 40px;
+    max-width: 700px;
+    width: 90%;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+}
+
+.eval-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.eval-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #1a1a2e;
+}
+
+.eval-topic-tag {
+    font-size: 13px;
+    font-weight: 600;
+    color: #4f6ef7;
+    background: #edf0fb;
+    padding: 3px 10px;
+    border-radius: 20px;
+}
+
+.eval-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.eval-card {
+    background: #f7f8fb;
+    border-radius: 12px;
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    text-align: center;
+}
+
+.score-ring {
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    border: 6px solid #d1d5db;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.3s;
+}
+
+.score-ring.high { border-color: #38a169; }
+.score-ring.mid  { border-color: #e6a817; }
+.score-ring.low  { border-color: #e53e3e; }
+
+.score-ring #ct-score,
+.score-ring #prompt-score {
+    font-size: 28px;
+    font-weight: 800;
+    line-height: 1;
+    color: #1a1a2e;
+}
+
+.score-ring.high #ct-score,
+.score-ring.high #prompt-score { color: #38a169; }
+.score-ring.mid  #ct-score,
+.score-ring.mid  #prompt-score { color: #e6a817; }
+.score-ring.low  #ct-score,
+.score-ring.low  #prompt-score { color: #e53e3e; }
+
+.score-label {
+    font-size: 11px;
+    color: #718096;
+    font-weight: 600;
+}
+
+.eval-card-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #2d3748;
+}
+
+.eval-feedback {
+    font-size: 13px;
+    line-height: 1.7;
+    color: #4a5568;
+    text-align: left;
+}
+
+.eval-next-btn {
+    align-self: flex-end;
+    font-size: 14px;
+    padding: 8px 22px;
+}
+
 #loading-overlay {
     position: fixed;
     inset: 0;

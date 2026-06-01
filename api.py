@@ -242,6 +242,55 @@ def chat():
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
 
+SYSTEM_EVAL = (
+    "You are an educational assessment AI. "
+    "Evaluate the student's computational thinking and prompting quality based on their answers and chat history. "
+    "Respond ONLY with valid JSON. No other text."
+)
+
+
+@api.route("/evaluate", methods=["POST"])
+def evaluate():
+    data = request.get_json()
+    topic = data.get("topic", "")
+    code = data.get("code", "")
+    problems = data.get("problems", [])
+    answers = data.get("answers", [])
+    chat_history = data.get("chat_history", [])
+
+    qa_pairs = ""
+    for i, (p, a) in enumerate(zip(problems, answers), 1):
+        qa_pairs += f"\n{i}. [문제] {p}\n   [답변] {a}\n"
+
+    chat_text = ""
+    for msg in chat_history:
+        role = "학생" if msg["role"] == "user" else "AI"
+        chat_text += f"\n{role}: {msg['content']}"
+
+    prompt = (
+        f"/no_think 다음은 Python '{topic}' 주제 학습 중 학생의 문제 답변과 챗봇 대화 내역입니다.\n\n"
+        f"코드 예제:\n{code}\n\n"
+        f"문제와 답변:{qa_pairs}\n"
+        f"챗봇 대화:{chat_text if chat_text else ' (없음)'}\n\n"
+        f"위 내역을 바탕으로 아래 두 가지를 평가해주세요.\n\n"
+        f"1. 컴퓨팅 사고력: 분해(Decomposition), 패턴인식(Pattern Recognition), 추상화(Abstraction), 알고리즘(Algorithm) 측면에서 평가\n"
+        f"2. 프롬프팅 품질: 질문의 명확성, 구체성, 맥락 제공 정도를 평가\n\n"
+        f"반드시 아래 JSON 형식만 출력하세요. 다른 텍스트 없이 JSON만 출력.\n"
+        f'{{"ct_score": 숫자(0~100), "ct_feedback": "한국어 피드백", "prompt_score": 숫자(0~100), "prompt_feedback": "한국어 피드백"}}'
+    )
+
+    try:
+        raw = call_lm(SYSTEM_EVAL, prompt, max_tokens=1024)
+        m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
+        if m:
+            result = json.loads(m.group())
+        else:
+            result = json.loads(raw.strip())
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+
 def save_turn(session_id, user_message, assistant_reply, code_context=None):
     try:
         sessions = []
