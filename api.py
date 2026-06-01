@@ -132,15 +132,7 @@ def generate_code():
     data = request.get_json()
     topic = data.get("topic", "Python 기초")
     try:
-        ctx = rag_store.retrieve("code_examples", topic)
-        if ctx:
-            user_msg = (
-                f"/no_think [참고 자료]\n{ctx}\n\n"
-                f"위 참고 자료를 활용해서 '{topic}'을 보여주는 예제 코드를 작성해줘."
-            )
-        else:
-            user_msg = f"/no_think '{topic}'을 보여주는 간단한 예제 코드를 작성해줘."
-
+        user_msg = f"/no_think '{topic}'을 보여주는 간단한 예제 코드를 작성해줘."
         raw = call_lm(SYSTEM_CODE, user_msg)
         return jsonify({"code": strip_fences(raw)})
     except Exception as e:

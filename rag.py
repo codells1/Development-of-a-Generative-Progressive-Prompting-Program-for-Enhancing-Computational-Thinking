@@ -27,7 +27,7 @@ CHUNK_SIZE    = 200
 CHUNK_OVERLAP = 50
 TOP_K         = 5
 
-COLLECTIONS   = ("code_examples", "problem_templates")
+COLLECTIONS   = ("problem_templates",)
 SUPPORTED_EXT = (".txt", ".pdf")
 
 # 폴더 초기화

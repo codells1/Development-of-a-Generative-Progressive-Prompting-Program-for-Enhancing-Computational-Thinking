@@ -1,5 +1,4 @@
 flask>=3.0.0
-requests>=2.31.0
 openai>=1.0.0
 
 # RAG (tetrapod0/RAG_with_lm_studio 방식)
