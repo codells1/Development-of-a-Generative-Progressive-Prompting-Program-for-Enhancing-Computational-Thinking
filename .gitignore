@@ -11,6 +11,7 @@ rag_db/
 rag_docs/code_examples/*
 rag_docs/problem_templates/*
 !rag_docs/code_examples/.gitkeep
+!rag_docs/code_examples/*.txt
 !rag_docs/problem_templates/.gitkeep
 !rag_docs/problem_templates/ct_*.txt
 

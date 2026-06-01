@@ -23,12 +23,13 @@ LM_BASE_URL   = "http://localhost:1234/v1"
 EMBED_MODEL   = "text-embedding-bge-m3"  # LM Studio에 로드된 임베딩 모델명
 DOCS_DIR      = os.path.join(os.path.dirname(__file__), "rag_docs")   # 파일 보관 폴더
 DB_DIR        = os.path.join(os.path.dirname(__file__), "rag_db")     # FAISS 인덱스 폴더
-CHUNK_SIZE    = 200
 CHUNK_OVERLAP = 50
 TOP_K         = 5
 
-COLLECTIONS   = ("problem_templates",)
-SUPPORTED_EXT = (".txt", ".pdf")
+COLLECTIONS        = ("code_examples", "problem_templates")
+CHUNK_SIZE_CODE    = 450   # code_examples: 코드 블록이 통째로 검색되도록
+CHUNK_SIZE_TPL     = 200   # problem_templates: 변경 금지
+SUPPORTED_EXT      = (".txt", ".pdf")
 
 # 폴더 초기화
 for _col in COLLECTIONS:
@@ -71,22 +72,34 @@ if _AVAILABLE:
 
     _embeddings = OllamaEmbeddings()
 
-    _splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
+    _splitter_code = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE_CODE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ""],
+        length_function=len,
+    )
+    _splitter_tpl = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE_TPL,
         chunk_overlap=CHUNK_OVERLAP,
         separators=["\n\n", "\n", "(?<=\\. )", " ", ""],
         length_function=len,
     )
+    _SPLITTERS = {
+        "code_examples":    _splitter_code,
+        "problem_templates": _splitter_tpl,
+    }
 
     _stores: dict = {name: None for name in COLLECTIONS}
 else:
-    _embeddings = None
-    _splitter   = None
-    _stores     = {}
+    _embeddings   = None
+    _splitter_code = None
+    _splitter_tpl  = None
+    _SPLITTERS     = {}
+    _stores        = {}
 
 
 # ── 내부 유틸 ──────────────────────────────────────────────────
-def _load_file(file_path: str) -> List:
+def _load_file(file_path: str, splitter=None) -> List:
     """TXT/PDF 파일을 LangChain Document 리스트로 로드 후 청킹."""
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".txt":
@@ -95,7 +108,7 @@ def _load_file(file_path: str) -> List:
         loader = PyPDFLoader(file_path)
     else:
         raise ValueError(f"지원하지 않는 형식: {ext}")
-    return loader.load_and_split(text_splitter=_splitter)
+    return loader.load_and_split(text_splitter=splitter or _splitter_tpl)
 
 
 def _save(collection: str):
@@ -112,6 +125,7 @@ def _check(collection: str):
 def _build_index(collection: str) -> Optional[object]:
     """rag_docs/{collection}/ 의 모든 파일을 읽어 FAISS 인덱스를 새로 빌드."""
     docs_path = os.path.join(DOCS_DIR, collection)
+    splitter = _SPLITTERS.get(collection, _splitter_tpl)
     all_chunks = []
 
     for fname in sorted(os.listdir(docs_path)):
@@ -119,7 +133,7 @@ def _build_index(collection: str) -> Optional[object]:
             continue
         fpath = os.path.join(docs_path, fname)
         try:
-            chunks = _load_file(fpath)
+            chunks = _load_file(fpath, splitter)
             for c in chunks:
                 c.metadata["source_file"] = fname
             all_chunks.extend(chunks)

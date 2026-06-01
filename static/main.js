@@ -8,20 +8,9 @@ let submittedAnswers = [];
 let currentTopic = "";
 const TOTAL_PROBLEMS = 5;
 
-const TOPICS = [
-    "변수와 자료형",
-    "입력과 출력",
-    "조건문",
-    "for 반복문",
-    "while 반복문",
-    "함수",
-    "리스트 조작",
-    "문자열 조작",
-    "딕셔너리",
-    "재귀함수",
-    "예외처리",
-];
-let currentTopicIndex = 0;
+const STAGES = ["순차/조건", "반복문/리스트", "함수", "알고리즘"];
+let currentStage = 0;
+let isFusion = false;
 
 function setOverlay(visible, text = "") {
     const overlay = document.getElementById("loading-overlay");
@@ -48,9 +37,10 @@ async function checkStatus() {
 }
 
 async function generateCode() {
-    const topic = TOPICS[currentTopicIndex];
-    currentTopicIndex = (currentTopicIndex + 1) % TOPICS.length;
-    currentTopic = topic;
+    const stageLabel = isFusion
+        ? "융합 종합 평가"
+        : `${currentStage + 1}단계: ${STAGES[currentStage]}`;
+    currentTopic = isFusion ? "융합" : STAGES[currentStage];
 
     const codeBlock = document.getElementById("code-display");
     const problemDisplay = document.getElementById("problem-display");
@@ -61,8 +51,8 @@ async function generateCode() {
     submittedAnswers = [];
     currentProblem = null;
 
-    document.getElementById("topic-label").textContent = topic;
-    setOverlay(true, `${topic} 코드 만드는 중...`);
+    document.getElementById("topic-label").textContent = stageLabel;
+    setOverlay(true, `${stageLabel} 코드 만드는 중...`);
     codeBlock.innerHTML = "<code></code>";
     problemDisplay.className = "text-display placeholder";
     problemDisplay.textContent = "";
@@ -70,10 +60,11 @@ async function generateCode() {
     answerArea.classList.remove("visible");
 
     try {
+        const body = isFusion ? { is_fusion: true } : { stage: currentStage };
         const res = await fetch("/api/generate-code", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ topic }),
+            body: JSON.stringify(body),
         });
         const data = await res.json();
 
@@ -84,6 +75,7 @@ async function generateCode() {
 
         codeBlock.innerHTML = `<code>${escapeHtml(data.code)}</code>`;
         currentCode = data.code;
+        currentTopic = data.topic || currentTopic;
 
         setOverlay(true, `문제 1 / ${TOTAL_PROBLEMS} 만드는 중...`);
         await generateNextProblem();
@@ -226,6 +218,15 @@ function showEvalResult(data, errorMsg = null) {
         document.getElementById("prompt-score-ring").className = "score-ring " + scoreClass(promptScore);
     }
 
+    const nextBtn = document.querySelector(".eval-next-btn");
+    if (isFusion) {
+        nextBtn.textContent = "처음으로 →";
+    } else if (currentStage >= STAGES.length - 1) {
+        nextBtn.textContent = "융합 평가 →";
+    } else {
+        nextBtn.textContent = `${currentStage + 2}단계로 →`;
+    }
+
     overlay.classList.remove("hidden");
 }
 
@@ -237,6 +238,14 @@ function scoreClass(score) {
 
 function closeEvalAndRestart() {
     document.getElementById("eval-overlay").classList.add("hidden");
+    if (isFusion) {
+        currentStage = 0;
+        isFusion = false;
+    } else if (currentStage >= STAGES.length - 1) {
+        isFusion = true;
+    } else {
+        currentStage++;
+    }
     generateCode();
 }
 
@@ -311,6 +320,18 @@ function escapeHtml(str) {
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+}
+
+function skipToNext() {
+    if (isFusion) {
+        currentStage = 0;
+        isFusion = false;
+    } else if (currentStage >= STAGES.length - 1) {
+        isFusion = true;
+    } else {
+        currentStage++;
+    }
+    generateCode();
 }
 
 checkStatus();

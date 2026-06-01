@@ -46,14 +46,21 @@ def build_chat_system(code_context: str = None, current_problem: str = None) -> 
         system += f"\n\n[현재 풀고 있는 문제]\n{current_problem}"
     return system
 
-DIFFICULTIES = ["매우 쉬움", "쉬움", "보통", "어려움", "매우 어려움"]
+STAGE_MAP = {
+    0: "순차/조건",
+    1: "반복문/리스트",
+    2: "함수",
+    3: "알고리즘",
+}
 
-CT_SKILL_MAP = {
-    0: "분해",
-    1: "패턴인식",
-    2: "추상화",
-    3: "알고리즘적사고",
-    4: "통합",
+FUSION_TOPIC = "융합"
+
+CT_MAP = {
+    0: {"ct_skill": "분해",           "difficulty": "매우쉬움"},
+    1: {"ct_skill": "패턴인식",       "difficulty": "쉬움"},
+    2: {"ct_skill": "추상화",         "difficulty": "보통"},
+    3: {"ct_skill": "알고리즘적사고", "difficulty": "어려움"},
+    4: {"ct_skill": "통합",           "difficulty": "매우어려움"},
 }
 
 # 한국어 문장 종결 패턴
@@ -130,11 +137,23 @@ def status():
 @api.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.get_json()
-    topic = data.get("topic", "Python 기초")
+    is_fusion = data.get("is_fusion", False)
+    stage = data.get("stage", 0)
+
+    if is_fusion:
+        topic = FUSION_TOPIC
+        instruction = "여러 프로그래밍 개념(순차/조건, 반복/리스트, 함수, 알고리즘)을 2개 이상 결합한 종합 예제 코드를 작성해줘."
+    else:
+        topic = STAGE_MAP.get(int(stage), "순차/조건")
+        instruction = f"'{topic}'을 보여주는 간단한 예제 코드를 작성해줘."
+
+    ctx = rag_store.retrieve("code_examples", topic)
+    ctx_block = f"\n\n[참고 예제]\n{ctx}" if ctx else ""
+
     try:
-        user_msg = f"/no_think '{topic}'을 보여주는 간단한 예제 코드를 작성해줘."
+        user_msg = f"/no_think [주제: {topic}]{ctx_block}\n\n{instruction}"
         raw = call_lm(SYSTEM_CODE, user_msg)
-        return jsonify({"code": strip_fences(raw)})
+        return jsonify({"code": strip_fences(raw), "topic": topic})
     except Exception as e:
         return jsonify({"error": str(e)}), 503
 
@@ -146,8 +165,9 @@ def generate_problem():
     problem_index = data.get("problem_index", 0)
     previous = data.get("previous_problems", [])
 
-    difficulty = DIFFICULTIES[min(problem_index, 4)]
-    ct_skill = CT_SKILL_MAP[min(problem_index, 4)]
+    ct_info = CT_MAP[min(problem_index, 4)]
+    ct_skill = ct_info["ct_skill"]
+    difficulty = ct_info["difficulty"]
 
     ctx = rag_store.retrieve("problem_templates", f"{ct_skill} {difficulty} {code[:300]}")
     ctx_block = f"\n\n[참고 템플릿]\n{ctx}" if ctx else ""
