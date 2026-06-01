@@ -129,11 +129,14 @@ async function generateNextProblem() {
         previousProblems.push(problem);
         currentProblem = problem;
 
+        const ctSkill = data.ct_skill || "";
         document.getElementById("problem-count").textContent =
             `${currentProblemIndex + 1} / ${TOTAL_PROBLEMS}`;
         problemDisplay.className = "text-display";
         problemDisplay.style.color = "";
-        problemDisplay.innerHTML = `<div class="problem-item">${escapeHtml(problem)}</div>`;
+        problemDisplay.innerHTML =
+            `${ctSkill ? `<div class="ct-skill-badge">${escapeHtml(ctSkill)}</div>` : ""}` +
+            `<div class="problem-item">${escapeHtml(problem)}</div>`;
 
         answerInput.value = "";
         answerArea.classList.add("visible");

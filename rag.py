@@ -157,13 +157,16 @@ def _init():
                 logging.warning(f"[RAG] '{col}' 인덱스 로드 실패, 재빌드: {e}")
 
         # 인덱스 없음 → rag_docs/ 에 파일이 있으면 빌드
-        store = _build_index(col)
-        if store:
-            _stores[col] = store
-            _save(col)
-            logging.info(f"[RAG] '{col}' 인덱스 빌드 완료")
-        else:
-            logging.info(f"[RAG] '{col}' — rag_docs/{col}/ 에 파일 없음, 비어 있음")
+        try:
+            store = _build_index(col)
+            if store:
+                _stores[col] = store
+                _save(col)
+                logging.info(f"[RAG] '{col}' 인덱스 빌드 완료")
+            else:
+                logging.info(f"[RAG] '{col}' — rag_docs/{col}/ 에 파일 없음, 비어 있음")
+        except Exception as e:
+            logging.warning(f"[RAG] '{col}' 빌드 실패 (LM Studio 미실행?): {e}")
 
 _init()
 

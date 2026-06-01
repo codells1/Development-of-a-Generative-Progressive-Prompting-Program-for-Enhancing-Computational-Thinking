@@ -12,6 +12,7 @@ rag_docs/code_examples/*
 rag_docs/problem_templates/*
 !rag_docs/code_examples/.gitkeep
 !rag_docs/problem_templates/.gitkeep
+!rag_docs/problem_templates/ct_*.txt
 
 # Claude Code 로컬 설정
 .claude/

@@ -48,6 +48,14 @@ def build_chat_system(code_context: str = None, current_problem: str = None) -> 
 
 DIFFICULTIES = ["매우 쉬움", "쉬움", "보통", "어려움", "매우 어려움"]
 
+CT_SKILL_MAP = {
+    0: "분해",
+    1: "패턴인식",
+    2: "추상화",
+    3: "알고리즘적사고",
+    4: "통합",
+}
+
 # 한국어 문장 종결 패턴
 _KO_ENDING = re.compile(r"[가-힣]+(?:세요|요\?|까요\?|인가요\?|볼까요\?|보세요\.?|해요\.?|십시오\.?)\s*$")
 
@@ -147,19 +155,27 @@ def generate_problem():
     previous = data.get("previous_problems", [])
 
     difficulty = DIFFICULTIES[min(problem_index, 4)]
+    ct_skill = CT_SKILL_MAP[min(problem_index, 4)]
 
-    ctx = rag_store.retrieve("problem_templates", f"{difficulty} {code[:300]}")
-    ctx_block = f"\n\n[문제 참고 템플릿]\n{ctx}" if ctx else ""
+    ctx = rag_store.retrieve("problem_templates", f"{ct_skill} {difficulty} {code[:300]}")
+    ctx_block = f"\n\n[참고 템플릿]\n{ctx}" if ctx else ""
 
     prev_text = ""
     if previous:
-        prev_text = "\n\n이미 출제된 문제 (중복 금지):\n" + "\n".join(f"- {p}" for p in previous)
+        prev_text = "\n\n[이미 출제된 문제 - 중복 금지]\n" + "\n".join(f"- {p}" for p in previous)
 
     prompt = (
-        f"/no_think 아래 Python 코드를 보고 학습 문제를 한국어로 딱 1개만 만들어줘.\n"
-        f"난이도: {difficulty} (총 5문제 중 {problem_index + 1}번째)\n"
-        f"문제 내용만 한 문장으로 출력해. 번호나 제목은 쓰지 마."
-        f"{ctx_block}{prev_text}\n\n코드:\n{code}"
+        f"/no_think 다음 파이썬 코드를 읽고 {ct_skill} 능력을 측정하는 객관식 문제 1개를 만들어라.\n\n"
+        f"[CT 요소: {ct_skill}]\n"
+        f"[난이도: {difficulty}] (총 5문제 중 {problem_index + 1}번째)"
+        f"{ctx_block}"
+        f"{prev_text}\n\n"
+        f"[파이썬 코드]\n{code}\n\n"
+        f"규칙:\n"
+        f"- 보기 4개 (A/B/C/D)\n"
+        f"- 정답과 해설 포함\n"
+        f"- {ct_skill}을 측정하는 질문 방향으로 출제\n"
+        f"- 첫 줄에 문제 질문만 출력"
     )
 
     try:
@@ -172,7 +188,7 @@ def generate_problem():
                 break
         if not problem:
             problem = raw.strip()
-        return jsonify({"problem": problem})
+        return jsonify({"problem": problem, "ct_skill": ct_skill})
     except Exception as e:
         return jsonify({"error": str(e)}), 503
 
