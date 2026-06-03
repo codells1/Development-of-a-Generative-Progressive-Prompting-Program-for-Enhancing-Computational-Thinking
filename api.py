@@ -33,6 +33,49 @@ CT_MAP = {
 }
 
 
+def _iter_stream_content(stream):
+    """스트리밍에서 Qwen3 <think>...</think> 블록을 제거하며 텍스트를 산출한다."""
+    buffer = ""
+    in_think = False
+    OPEN_TAG, CLOSE_TAG = "<think>", "</think>"
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content or ""
+        if not delta:
+            continue
+        buffer += delta
+
+        while buffer:
+            if in_think:
+                idx = buffer.find(CLOSE_TAG)
+                if idx == -1:
+                    buffer = ""
+                    break
+                buffer = buffer[idx + len(CLOSE_TAG):]
+                in_think = False
+            else:
+                idx = buffer.find(OPEN_TAG)
+                if idx == -1:
+                    # 버퍼 끝에 태그가 시작될 수 있는 경우 보류
+                    safe = len(buffer)
+                    for i in range(1, len(OPEN_TAG)):
+                        if buffer.endswith(OPEN_TAG[:i]):
+                            safe = len(buffer) - i
+                            break
+                    if safe > 0:
+                        yield buffer[:safe]
+                    buffer = buffer[safe:]
+                    break
+                else:
+                    if idx > 0:
+                        yield buffer[:idx]
+                    buffer = buffer[idx + len(OPEN_TAG):]
+                    in_think = True
+
+    if buffer and not in_think:
+        yield buffer
+
+
 def strip_fences(text: str) -> str:
     text = re.sub(r"^```[a-zA-Z]*\n?", "", text.strip())
     text = re.sub(r"\n?```$", "", text.strip())
@@ -213,11 +256,9 @@ def chat():
     def generate():
         try:
             stream = llm.stream_chatbot(messages)
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    full_reply_holder.append(delta)
-                    yield f"data: {json.dumps({'delta': delta})}\n\n"
+            for text in _iter_stream_content(stream):
+                full_reply_holder.append(text)
+                yield f"data: {json.dumps({'delta': text})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
@@ -253,11 +294,9 @@ def chat_nudge():
     def generate():
         try:
             stream = llm.stream_chatbot(full_messages)
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    full_reply_holder.append(delta)
-                    yield f"data: {json.dumps({'delta': delta})}\n\n"
+            for text in _iter_stream_content(stream):
+                full_reply_holder.append(text)
+                yield f"data: {json.dumps({'delta': text})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return

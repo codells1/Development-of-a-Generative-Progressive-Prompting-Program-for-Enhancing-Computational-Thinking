@@ -138,6 +138,8 @@ def _generate(messages: list, temperature: float, max_tokens: int = 4096) -> str
         )
     choice = resp.choices[0]
     content = (choice.message.content or "").strip()
+    # Qwen3가 content에 <think>...</think> 블록을 포함할 경우 제거
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
     if not content:
         reasoning = getattr(choice.message, "reasoning_content", None) or ""
         content = _extract_from_reasoning(reasoning)
