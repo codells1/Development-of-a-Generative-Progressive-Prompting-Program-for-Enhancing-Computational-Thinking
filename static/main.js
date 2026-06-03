@@ -38,10 +38,13 @@ let allProblemsComplete = false;  // 문제 완료 후 최소 대화 대기 중
 let stageChatHistory    = [];     // 현 단계 전용 대화 기록 (CT 측정용, 단계 전환마다 초기화)
 
 const CT_TIP = {
-    "분해":          "코드를 역할별로 나눠서 각 부분이 어떻게 동작하는지 질문해보세요.",
-    "패턴인식":      "코드에서 반복되는 패턴이나 규칙을 발견하는 질문을 해보세요.",
-    "추상화":        "변수나 함수가 실제로 무엇을 대표하는지 질문해보세요.",
-    "알고리즘적사고": "코드 실행 순서를 단계별로 추적하며 결과를 예측하는 질문을 해보세요.",
+    "문제분해": "코드를 의미 있는 부분으로 나누고, 각 부분의 입력·출력과 부분 간 관계를 질문해보세요.",
+    "용어사용": "변수·함수·반복문 같은 프로그래밍 용어를 정확히 써서 설명해보세요.",
+    "추상화":   "핵심 로직과 보조 코드를 구분하고, 이 코드가 결국 무엇을 하는지 한 문장으로 요약해보세요.",
+    "실행흐름": "순차·조건·반복을 따라 실행 순서를 단계별로 추적하는 질문을 해보세요.",
+    "자료형태": "변수의 타입과 자료구조(리스트·딕셔너리 등)가 무엇이고 왜 쓰였는지 질문해보세요.",
+    "대안탐색": "코드가 왜 그렇게 동작하는지 따져보고, 결과가 기대와 다르면 어디를 고칠지 질문해보세요.",
+    "자기해결": "받은 힌트를 스스로 적용해 확인하고, 자신의 아이디어로 문제를 풀어보세요.",
 };
 
 async function init() {
@@ -78,14 +81,17 @@ function showSessionStartOverlay(data) {
 
     for (const [skill, score] of Object.entries(ctScores)) {
         const isWeak = skill === weakCt;
+        const observed = score !== null && score !== undefined;
+        const width = observed ? score / 3 * 100 : 0;
+        const scoreText = observed ? `${score}/3` : "관찰 안 됨";
         const row = document.createElement("div");
         row.className = "ct-bar-row";
         row.innerHTML =
             `<span class="ct-bar-label${isWeak ? " weak" : ""}">${escapeHtml(skill)}</span>` +
             `<div class="ct-bar-track">` +
-            `<div class="ct-bar-fill${isWeak ? " weak" : ""}" style="width:${score / 5 * 100}%"></div>` +
+            `<div class="ct-bar-fill${isWeak ? " weak" : ""}" style="width:${width}%"></div>` +
             `</div>` +
-            `<span class="ct-bar-score">${score}/5</span>`;
+            `<span class="ct-bar-score">${scoreText}</span>`;
         container.appendChild(row);
     }
 
@@ -497,6 +503,7 @@ function showEvalResult(data, errorMsg = null) {
         document.getElementById("prompt-feedback").textContent = "";
         document.getElementById("ct-score-ring").className = "score-ring";
         document.getElementById("prompt-score-ring").className = "score-ring";
+        document.getElementById("ct-breakdown-section").classList.add("hidden");
     } else {
         // 수준 2: 이 단계 약점을 다음 단계 챗봇에 즉시 반영
         if (data.weak_ct) prevWeakCt = data.weak_ct;
@@ -509,6 +516,8 @@ function showEvalResult(data, errorMsg = null) {
         document.getElementById("prompt-feedback").textContent = data.prompt_feedback || "";
         document.getElementById("ct-score-ring").className = "score-ring " + scoreClass(ctScore);
         document.getElementById("prompt-score-ring").className = "score-ring " + scoreClass(promptScore);
+
+        renderCtBreakdown(data.ct_evaluation || {}, data.weak_ct || "");
     }
 
     const nextBtn = document.querySelector(".eval-next-btn");
@@ -527,6 +536,43 @@ function scoreClass(score) {
     if (score >= 80) return "high";
     if (score >= 60) return "mid";
     return "low";
+}
+
+const CT_ORDER = ["문제분해", "용어사용", "추상화", "실행흐름", "자료형태", "대안탐색", "자기해결"];
+const CT_LEVEL = { 1: "미흡", 2: "보통", 3: "우수" };
+
+function renderCtBreakdown(detail, weakCt) {
+    const section = document.getElementById("ct-breakdown-section");
+    const list = document.getElementById("ct-breakdown");
+    list.innerHTML = "";
+
+    if (!detail || Object.keys(detail).length === 0) {
+        section.classList.add("hidden");
+        return;
+    }
+    section.classList.remove("hidden");
+
+    for (const skill of CT_ORDER) {
+        const item = detail[skill];
+        if (!item) continue;
+        const observed = item.observed && item.score !== null && item.score !== undefined;
+        const isWeak = skill === weakCt;
+        const score = observed ? item.score : null;
+        const width = observed ? score / 3 * 100 : 0;
+        const levelText = observed ? `${CT_LEVEL[score] || score}` : "관찰 안 됨";
+        const levelClass = observed ? `lv${score}` : "unobserved";
+
+        const row = document.createElement("div");
+        row.className = "ctb-row" + (isWeak ? " weak" : "");
+        row.innerHTML =
+            `<div class="ctb-head">` +
+            `<span class="ctb-name">${escapeHtml(skill)}${isWeak ? " <span class=\"ctb-weak-tag\">약점</span>" : ""}</span>` +
+            `<span class="ctb-level ${levelClass}">${levelText}</span>` +
+            `</div>` +
+            `<div class="ctb-track"><div class="ctb-fill ${levelClass}" style="width:${width}%"></div></div>` +
+            (item.feedback ? `<p class="ctb-feedback">${escapeHtml(item.feedback)}</p>` : "");
+        list.appendChild(row);
+    }
 }
 
 function closeEvalAndRestart() {

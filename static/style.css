@@ -15,7 +15,7 @@ body {
 .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 2fr;
+    grid-template-rows: 1fr 1fr;
     height: 100vh;
     gap: 8px;
     padding: 8px;
@@ -263,10 +263,12 @@ pre {
     padding: 36px 40px;
     max-width: 700px;
     width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
     box-shadow: 0 8px 40px rgba(0,0,0,0.2);
     display: flex;
     flex-direction: column;
-    gap: 28px;
+    gap: 24px;
 }
 
 .eval-header {
@@ -361,6 +363,97 @@ pre {
     align-self: flex-end;
     font-size: 14px;
     padding: 8px 22px;
+}
+
+/* ── 평가 결과: CT 7지표 분석 ───────────────────────────── */
+.ct-breakdown-section {
+    border-top: 1px solid #e3e6ed;
+    padding-top: 20px;
+}
+
+.ct-breakdown-section.hidden { display: none; }
+
+.ct-breakdown-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #1a1a2e;
+    margin: 0 0 14px;
+}
+
+.ct-breakdown-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.ctb-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.ctb-row.weak {
+    background: #fff5f5;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: -4px -4px;
+}
+
+.ctb-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.ctb-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #2d3748;
+}
+
+.ctb-weak-tag {
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    background: #e53e3e;
+    padding: 1px 7px;
+    border-radius: 10px;
+    margin-left: 6px;
+}
+
+.ctb-level {
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.ctb-level.lv1 { color: #e53e3e; }
+.ctb-level.lv2 { color: #e6a817; }
+.ctb-level.lv3 { color: #38a169; }
+.ctb-level.unobserved { color: #a0aec0; font-weight: 600; }
+
+.ctb-track {
+    height: 7px;
+    background: #edf0f5;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.ctb-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.4s ease;
+}
+
+.ctb-fill.lv1 { background: #e53e3e; }
+.ctb-fill.lv2 { background: #e6a817; }
+.ctb-fill.lv3 { background: #38a169; }
+.ctb-fill.unobserved { background: transparent; }
+
+.ctb-feedback {
+    font-size: 12px;
+    color: #5a6678;
+    line-height: 1.5;
+    margin: 2px 0 0;
 }
 
 #loading-overlay {

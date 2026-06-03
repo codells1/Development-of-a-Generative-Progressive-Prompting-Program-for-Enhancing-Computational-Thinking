@@ -23,7 +23,7 @@ STAGE_MAP = {
 
 FUSION_TOPIC = "융합"
 
-CT_SKILLS     = ("분해", "패턴인식", "추상화", "알고리즘적사고")
+CT_SKILLS     = ("문제분해", "용어사용", "추상화", "실행흐름", "자료형태", "대안탐색", "자기해결")
 PROMPT_SKILLS = ("명확성", "구체성", "맥락제공", "관련성", "자기주도성", "발전성")
 
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback.json")
@@ -94,8 +94,84 @@ def _extract_json(raw: str) -> dict:
     return json.loads(m.group())
 
 
+def _norm(s: str) -> str:
+    """공백 제거 정규화 — evidence가 학생 발화에 실재하는지 대조용."""
+    return re.sub(r"\s+", "", s or "")
+
+
+def _clean_evidence(ev: str) -> str:
+    """모델이 붙이는 역할 라벨('학생:')·따옴표를 제거해 학생 발화와 대조 가능하게 만든다."""
+    ev = (ev or "").strip().strip('"\'“”‘’')
+    ev = re.sub(r"^(학생|사용자|user|AI|도우미|assistant)\s*[:：\-]\s*", "", ev, flags=re.IGNORECASE)
+    return ev.strip()
+
+
+# 답만 요구하거나 내용이 없는 단답 — 어떤 CT 지표도 입증하지 못함(루브릭상 '답만 요구'=미관찰/1점)
+_FILLER_RE       = re.compile(r"^(ㅇ+|ㄴ+|네+|음+|어+|응+|글쎄요?|몰라요?|모르겠어?요?|그냥요?)$")
+_ANSWER_DEMAND_RE = re.compile(r"(답|정답).{0,4}(알려|뭐|가르|좀)|그냥.{0,3}알려|알려\s*주(세요|라|세요|십시오)?")
+
+
+def _is_low_content_evidence(ev: str) -> bool:
+    """근거 발화가 답 요구·무내용 단답이면 True — 그 지표는 입증되지 않은 것으로 본다."""
+    t = ev.strip()
+    if len(_norm(t)) < 5:
+        return True
+    if _FILLER_RE.match(t.replace(" ", "")):
+        return True
+    if _ANSWER_DEMAND_RE.search(t):
+        return True
+    return False
+
+
+def parse_ct_evaluation(raw: str, student_text: str) -> dict:
+    """7지표 CT 평가를 파싱·검증한다(채점 신뢰성은 코드가 담당).
+    - 관찰 시 score를 1~3으로 클램핑, 미관찰이면 None('미흡'과 구분).
+    - evidence가 학생 발화에 실재하지 않으면(=지어낸 근거) 미관찰 처리.
+    - ct_total은 관찰된 score만 코드에서 합산(LLM 숫자 미신뢰).
+    """
+    data  = _extract_json(raw)
+    items = data.get("ct_evaluation", [])
+    by_name = {}
+    if isinstance(items, list):
+        for it in items:
+            if isinstance(it, dict):
+                by_name[_norm(it.get("indicator", ""))] = it
+
+    student_norm = _norm(student_text)
+    detail = {}
+    for skill in CT_SKILLS:
+        it = by_name.get(_norm(skill), {})
+        evidence = _clean_evidence(it.get("evidence"))
+        feedback = (it.get("feedback") or "").strip()
+        observed = bool(it.get("observed")) and bool(evidence)
+        # 신뢰성 검증 ①: evidence(라벨·따옴표 제거 후)가 학생 발화에 실제로 존재해야 인정
+        if observed and _norm(evidence) not in student_norm:
+            observed, evidence = False, ""
+        # 신뢰성 검증 ②: 답 요구·무내용 단답은 어떤 지표도 입증 못 함 → 미관찰
+        if observed and _is_low_content_evidence(evidence):
+            observed, evidence = False, ""
+        if observed:
+            try:
+                score = max(1, min(3, int(it.get("score"))))
+            except (TypeError, ValueError):
+                score = 2
+        else:
+            score = None
+        detail[skill] = {"observed": observed, "score": score,
+                         "evidence": evidence, "feedback": feedback}
+
+    observed_scores = {k: v["score"] for k, v in detail.items() if v["observed"]}
+    weak_ct = min(observed_scores, key=observed_scores.get) if observed_scores else ""
+    return {
+        "detail":         detail,
+        "ct_total":       sum(observed_scores.values()),   # 코드 합산 (0~21)
+        "observed_count": len(observed_scores),
+        "weak_ct":        weak_ct,
+    }
+
+
 def save_feedback(session_id: str, topic: str, ct: dict, prompt: dict) -> None:
-    """CT 4요소 점수 + 프롬프팅 6요소 점수를 feedback.json에 누적 저장한다."""
+    """CT 7지표 평가 + 프롬프팅 6요소 점수를 feedback.json에 누적 저장한다."""
     try:
         records = []
         if os.path.exists(FEEDBACK_FILE):
@@ -107,7 +183,10 @@ def save_feedback(session_id: str, topic: str, ct: dict, prompt: dict) -> None:
             "session_id":      session_id,
             "timestamp":       now,
             "topic":           topic,
-            "ct_scores":       {k: ct.get(k, 1) for k in CT_SKILLS},
+            "ct_scores":       ct.get("ct_scores", {}),       # 지표별 점수(미관찰 null)
+            "ct_detail":       ct.get("ct_detail", {}),       # observed/score/evidence/feedback
+            "ct_total":        ct.get("ct_total", 0),         # 코드 합산 (0~21)
+            "observed_count":  ct.get("observed_count", 0),
             "weak_ct":         ct.get("weak_ct", ""),
             "ct_feedback":     ct.get("feedback", ""),
             "prompt_scores":   {k: prompt.get(k, 1) for k in PROMPT_SKILLS},
@@ -342,38 +421,62 @@ def evaluate():
         f"챗봇 대화:{chat_text if chat_text else ' (없음)'}"
     )
 
+    # evidence 검증 기준이 되는 학생 발화 원문
+    student_text = " ".join(
+        m.get("content", "") for m in chat_history if m.get("role") == "user"
+    )
+
     try:
-        ct_raw = _extract_json(llm.call_log_analysis(log_text))
-        pr_raw = _extract_json(llm.call_prompt_eval(log_text))
+        # CT 분석: 파싱 실패 시 1회 재시도 (temp 0.7로 간헐적 JSON 깨짐 대비)
+        ct_eval = None
+        for _ in range(2):
+            try:
+                ct_eval = parse_ct_evaluation(llm.call_log_analysis(log_text), student_text)
+                break
+            except (ValueError, json.JSONDecodeError):
+                continue
+        if ct_eval is None:
+            raise ValueError("CT 분석 JSON 파싱 실패 (재시도 후)")
+        pr_raw  = _extract_json(llm.call_prompt_eval(log_text))
 
-        # CT 4요소 점수 정규화 (1~5 클램핑)
-        ct_scores = {k: max(1, min(5, int(ct_raw.get(k, 1)))) for k in CT_SKILLS}
+        detail         = ct_eval["detail"]
+        weak_ct        = ct_eval["weak_ct"]
+        ct_total       = ct_eval["ct_total"]
+        observed_count = ct_eval["observed_count"]
 
-        # weak_ct 보정: LLM 산출값이 유효 키가 아니면 최솟값 키로 재계산
-        weak_ct = ct_raw.get("weak_ct", "")
-        if weak_ct not in ct_scores:
-            weak_ct = min(ct_scores, key=ct_scores.get)
+        # 지표별 점수(미관찰 null) — 시작화면 막대용
+        ct_scores = {k: detail[k]["score"] for k in CT_SKILLS}
 
-        # 평균(1~5) → 100점 환산 (프론트 현행 호환)
-        ct_score = round(sum(ct_scores.values()) / len(ct_scores) * 20)
+        # 0~100 환산 (기존 링 UI 호환): 관찰된 지표의 만점 대비
+        ct_score = round(ct_total / (observed_count * 3) * 100) if observed_count else 0
 
-        # 프롬프팅 6요소 점수 정규화
+        # 대표 피드백: 가장 약한 관찰 지표의 피드백 (없으면 안내)
+        if weak_ct:
+            ct_feedback = f"[{weak_ct}] {detail[weak_ct]['feedback']}"
+        else:
+            ct_feedback = "대화 근거가 적어 평가하기 어려웠어요. 다음엔 코드에 대해 더 질문해볼까요?"
+
+        # 프롬프팅 6요소 점수 정규화 (보조 지표)
         prompt_scores = {k: max(1, min(5, int(pr_raw.get(k, 1)))) for k in PROMPT_SKILLS}
         prompt_score  = round(sum(prompt_scores.values()) / len(prompt_scores) * 20)
 
-        # feedback.json 저장
+        # feedback.json 저장 (세션당 1회)
         save_feedback(
             session_id, topic,
-            {**ct_scores, "weak_ct": weak_ct, "feedback": ct_raw.get("feedback", "")},
+            {"ct_scores": ct_scores, "ct_detail": detail, "ct_total": ct_total,
+             "observed_count": observed_count, "weak_ct": weak_ct, "feedback": ct_feedback},
             {**prompt_scores, "overall": prompt_score, "feedback": pr_raw.get("feedback", "")},
         )
 
         return jsonify({
-            "ct_scores":       ct_scores,          # 4요소 각 점수 (Task 7에서 UI 활용)
+            "ct_scores":       ct_scores,        # 지표별 점수(미관찰 null) — 막대 UI
+            "ct_evaluation":   detail,           # 지표별 observed/score/evidence/feedback
+            "ct_total":        ct_total,         # 코드 합산 (0~21)
+            "observed_count":  observed_count,
             "weak_ct":         weak_ct,
-            "ct_score":        ct_score,            # 현 프론트용 단일 점수
-            "ct_feedback":     ct_raw.get("feedback", ""),
-            "prompt_scores":   prompt_scores,       # 6요소 각 점수
+            "ct_score":        ct_score,          # 0~100 (기존 링 UI 호환)
+            "ct_feedback":     ct_feedback,
+            "prompt_scores":   prompt_scores,     # 6요소 각 점수
             "prompt_score":    prompt_score,
             "prompt_feedback": pr_raw.get("feedback", ""),
         })
