@@ -297,6 +297,7 @@ function resetInactivityTimer() {
 async function triggerNudge(reason) {
     if (nudgeInProgress) return;
     nudgeInProgress = true;
+    clearInactivityTimer();   // 중복 유도 방지 — 남아있는 타이머 즉시 해제
 
     const bubble = appendBubble("assistant", "");
     let fullReply = "";

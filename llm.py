@@ -3,13 +3,15 @@ llm.py — 모든 LLM 호출을 역할별로 분리·관리하는 중앙 모듈
 """
 
 import re
+import random
 import threading
 from openai import OpenAI
 
 BASE_URL = "http://localhost:1234/v1"
 MODEL    = "local-model"
 
-TEMP_CREATIVE = 0.6   # 챗봇, 코드/문제 생성 (객관식 형식 안정 위해 0.7→0.6)
+TEMP_CREATIVE = 0.6   # 챗봇, 문제 생성
+TEMP_CODE     = 0.8   # 코드 생성 — 매번 다른 출력 유도
 TEMP_PRECISE  = 0.2   # CT 분석, 프롬프트 평가
 
 _client   = OpenAI(base_url=BASE_URL, api_key="lm-studio")
@@ -34,7 +36,9 @@ SYSTEM_CHAT = (
 SYSTEM_CODE = (
     "You are a coding tutor for beginners. "
     "Return ONLY a runnable Python code block. "
-    "No comments, no explanation, no markdown fences."
+    "No comments, no explanation, no markdown fences.\n"
+    "The reference example is for style and difficulty reference ONLY. "
+    "NEVER copy it directly — change variable names, situation, and numbers to write a brand-new original code."
 )
 
 SYSTEM_PROBLEM = (
@@ -140,32 +144,48 @@ def _generate(messages: list, temperature: float, max_tokens: int = 4096) -> str
     return content
 
 
+_CODE_SITUATIONS = [
+    "쇼핑 장바구니", "시험 점수", "운동 기록",
+    "온도 측정", "게임 점수", "도서 대출", "용돈 관리",
+]
+
+
 # ── 생성 계열 (TEMP_CREATIVE, history 없음) ────────────────────────
 
 def call_code_gen(topic: str, ctx: str = "") -> str:
-    ctx_block = f"\n\n[참고 예제]\n{ctx}" if ctx else ""
+    situation = random.choice(_CODE_SITUATIONS)
+    ref_block = f"\n\n[스타일 참고 — 코드 복사 금지]\n{ctx}" if ctx else ""
     user_content = (
-        f"/no_think [주제: {topic}]{ctx_block}\n\n"
-        f"'{topic}'을 보여주는 간단한 예제 코드를 작성해줘."
+        f"/no_think\n"
+        f"[주제] {topic}\n"
+        f"[상황] {situation}\n\n"
+        f"반드시 '{situation}' 맥락으로 '{topic}'을 보여주는 완전히 새로운 코드를 작성하라. "
+        f"변수명·숫자·상황이 아래 참고 예제와 달라야 한다. 절대 복사 금지."
+        f"{ref_block}"
     )
     return _generate(
         [{"role": "system", "content": SYSTEM_CODE},
          {"role": "user",   "content": user_content}],
-        TEMP_CREATIVE,
+        TEMP_CODE,
     )
 
 
 def call_code_gen_fusion(ctx: str = "") -> str:
-    ctx_block = f"\n\n[참고 예제]\n{ctx}" if ctx else ""
+    situation = random.choice(_CODE_SITUATIONS)
+    ref_block = f"\n\n[스타일 참고 — 코드 복사 금지]\n{ctx}" if ctx else ""
     user_content = (
-        f"/no_think [주제: 융합]{ctx_block}\n\n"
-        "여러 프로그래밍 개념(변수·조건, 반복·리스트, 함수, 알고리즘)을 "
-        "2개 이상 결합한 종합 예제 코드를 작성해줘."
+        f"/no_think\n"
+        f"[주제] 융합\n"
+        f"[상황] {situation}\n\n"
+        f"반드시 '{situation}' 맥락으로 여러 프로그래밍 개념(변수·조건, 반복·리스트, 함수, 알고리즘)을 "
+        f"2개 이상 결합한 완전히 새로운 종합 코드를 작성하라. "
+        f"변수명·숫자·상황이 아래 참고 예제와 달라야 한다. 절대 복사 금지."
+        f"{ref_block}"
     )
     return _generate(
         [{"role": "system", "content": SYSTEM_CODE},
          {"role": "user",   "content": user_content}],
-        TEMP_CREATIVE,
+        TEMP_CODE,
     )
 
 
