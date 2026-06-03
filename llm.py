@@ -44,6 +44,13 @@ SYSTEM_CODE = (
 SYSTEM_PROBLEM = (
     "You are a coding tutor. Create exactly ONE multiple-choice question in Korean "
     "based on the given Python code.\n"
+    "CRITICAL RULES — violating any of these is forbidden:\n"
+    "1. Ask ONLY about syntax, variables, or logic that ACTUALLY EXISTS in the code.\n"
+    "2. Do NOT invent situations or judgments absent from the code "
+    "(e.g. do not ask about speeding when the code only calculates distance).\n"
+    "3. The correct answer MUST be derivable by actually running or tracing the code — "
+    "not by inference or assumption.\n"
+    "4. Do NOT put variables, values, or concepts in any option that do not appear in the code.\n"
     "Output ONLY valid JSON — no markdown fences, no other text:\n"
     '{"question": "문제 본문", '
     '"options": ["A. 보기1", "B. 보기2", "C. 보기3", "D. 보기4"], '
@@ -200,16 +207,24 @@ def call_problem_gen(
     problem_index: int = 0,
 ) -> str:
     """CT 요소 기반 4지선다 객관식 문제 생성. JSON 반환."""
-    ctx_block = f"\n\n[참고 템플릿]\n{templates}" if templates else ""
+    ctx_block = (
+        f"\n\n[참고 템플릿(형식·질문방식 참고용 — 내용 복사 금지)]\n"
+        f"※ 아래 템플릿은 문제 형식과 질문 방식만 참고하는 용도다. 내용은 무시하라.\n"
+        f"⚠ 반드시 위 [파이썬 코드]에 실제로 존재하는 문법·변수·로직만으로 출제하라.\n"
+        f"⚠ 코드에 없는 문법이나 코드에 없는 상황·판단·기능을 지어내지 마라.\n"
+        f"⚠ 문제의 정답은 코드를 실제로 실행하거나 추적해서 나오는 결과여야 한다.\n"
+        f"⚠ 코드에 등장하지 않는 변수·값·개념을 보기에 넣지 마라.\n"
+        f"{templates}"
+    ) if templates else ""
     prev_text = (
         "\n\n[이미 출제된 문제 - 중복 금지]\n"
         + "\n".join(f"- {p}" for p in previous_problems)
     ) if previous_problems else ""
     user_content = (
         f"/no_think [CT 요소: {ct_skill}]\n"
-        f"[난이도: {difficulty}] (총 5문제 중 {problem_index + 1}번째)"
-        f"{ctx_block}{prev_text}\n\n"
+        f"[난이도: {difficulty}] (총 5문제 중 {problem_index + 1}번째)\n\n"
         f"[파이썬 코드]\n{code}"
+        f"{ctx_block}{prev_text}"
     )
     return _generate(
         [{"role": "system", "content": SYSTEM_PROBLEM},

@@ -20,7 +20,7 @@ let prevWeakCt = null;
 // 세션 내 의미 있는 대화로 인정받는 최소 횟수 (권장 5~8)
 const MIN_CHAT_TURNS             = 6;
 // 마지막 입력 후 챗봇이 먼저 말을 거는 무입력 대기 시간, 초 (권장 30~90)
-const INACTIVITY_TIMEOUT_SEC     = 45;
+const INACTIVITY_TIMEOUT_SEC     = 30;
 // 의미 있는 메시지로 인정하는 최소 자수 — 단답 제외 (권장 8~15)
 const MIN_MSG_LEN                = 10;
 // 오답 판정 후 챗봇 유도 메시지를 보내기까지의 딜레이, ms (권장 1000~3000)
@@ -33,6 +33,7 @@ let qualityChatCount    = 0;      // 품질 충족 대화 수 (세션 내)
 let inactivityTimer     = null;   // 무입력 타이머
 let wrongNudgeTimer     = null;   // 오답 유도 타이머
 let nudgeInProgress     = false;  // 유도 중복 방지
+let awaitingUserChat    = false;  // 유도 메시지 발송 후 사용자 채팅 대기 중 (제출 버튼 무시)
 let allProblemsComplete = false;  // 문제 완료 후 최소 대화 대기 중
 let stageChatHistory    = [];     // 현 단계 전용 대화 기록 (CT 측정용, 단계 전환마다 초기화)
 
@@ -46,6 +47,12 @@ const CT_TIP = {
 async function init() {
     checkStatus();
     updateChatCount();   // 배지를 상수값으로 즉시 초기화
+
+    // 입력 중(타이핑)에는 타이머 일시정지 — 키 입력마다 타이머를 리셋
+    document.getElementById("chat-input").addEventListener("input", () => {
+        if (inactivityTimer) resetInactivityTimer();
+    });
+
     await loadPreviousFeedback();
 }
 
@@ -140,6 +147,7 @@ async function generateCode() {
     selectedOption = null;
     qualityChatCount = 0;
     allProblemsComplete = false;
+    awaitingUserChat = false;
     stageChatHistory = [];
     clearInactivityTimer();
     updateChatCount();
@@ -257,6 +265,7 @@ async function generateNextProblem() {
 
         document.getElementById("answer-submit-row").classList.remove("hidden");
         answerArea.classList.add("visible");
+        resetInactivityTimer();   // 새 문제마다 타이머 초기화
     } catch (e) {
         console.error("[문제생성] 오류:", e);
         problemDisplay.className = "text-display";
@@ -348,6 +357,7 @@ async function triggerNudge(reason) {
         bubble.textContent = "유도 메시지 오류";
     } finally {
         nudgeInProgress = false;
+        awaitingUserChat = true;  // 사용자가 채팅으로 응답할 때까지 다음 유도 차단
         // 타이머 재시작 안 함 — 사용자가 메시지를 보낼 때(sendMessage)만 재시작
     }
 }
@@ -356,32 +366,30 @@ function submitAnswer() {
     if (!selectedOption || !currentProblemData) return;
 
     const isCorrect = selectedOption === currentProblemData.answer;
-    submittedAnswers.push(selectedOption);
 
-    // 선택지 비활성화 + 정답/오답 색상
+    // 선택지 비활성화
     document.querySelectorAll(".option-btn").forEach(btn => {
         btn.disabled = true;
-        if (btn.dataset.value === currentProblemData.answer) {
+        if (isCorrect && btn.dataset.value === currentProblemData.answer) {
             btn.classList.add("correct");
-        } else if (btn.dataset.value === selectedOption && !isCorrect) {
+        } else if (!isCorrect && btn.dataset.value === selectedOption) {
+            // 오답: 선택한 버튼만 빨강 — 정답 버튼은 표시 안 함(정답 노출 금지)
             btn.classList.add("wrong");
         }
     });
 
-    // 피드백 배지
     const badge = document.getElementById("feedback-badge");
     badge.className = "feedback-badge " + (isCorrect ? "feedback-correct" : "feedback-wrong");
     badge.textContent = isCorrect ? "✓ 정답" : "✗ 오답";
     document.getElementById("feedback-explanation").textContent =
         isCorrect ? (currentProblemData.explanation || "") : "";
 
-    // 오답: 연한 빨강 배경 + "이해했어요" 버튼만 표시 (다음 문제 잠금)
-    // 정답: 바로 "다음 문제 →" 표시
     const feedbackArea = document.getElementById("feedback-area");
     const ackBtn  = document.getElementById("ack-btn");
     const nextBtn = document.getElementById("next-btn");
 
     if (isCorrect) {
+        submittedAnswers.push(selectedOption);  // 정답일 때만 기록
         feedbackArea.classList.remove("wrong-bg");
         ackBtn.classList.add("hidden");
         nextBtn.classList.remove("hidden");
@@ -389,7 +397,10 @@ function submitAnswer() {
         feedbackArea.classList.add("wrong-bg");
         ackBtn.classList.remove("hidden");
         nextBtn.classList.add("hidden");
-        wrongNudgeTimer = setTimeout(() => triggerNudge("wrong_answer"), WRONG_NUDGE_DELAY_MS);
+        // 챗봇이 이미 유도 메시지를 보낸 후 사용자가 아직 채팅으로 응답하지 않았으면 재발동 안 함
+        if (!awaitingUserChat) {
+            wrongNudgeTimer = setTimeout(() => triggerNudge("wrong_answer"), WRONG_NUDGE_DELAY_MS);
+        }
     }
 
     document.getElementById("answer-submit-row").classList.add("hidden");
@@ -398,8 +409,15 @@ function submitAnswer() {
 
 function acknowledgeWrong() {
     if (wrongNudgeTimer) { clearTimeout(wrongNudgeTimer); wrongNudgeTimer = null; }
-    document.getElementById("ack-btn").classList.add("hidden");
-    document.getElementById("next-btn").classList.remove("hidden");
+    // 다음 문제로 가지 않고 재시도: 선택지 초기화 후 다시 풀 수 있게 복원
+    selectedOption = null;
+    document.querySelectorAll(".option-btn").forEach(btn => {
+        btn.disabled = false;
+        btn.classList.remove("wrong", "correct", "selected");
+    });
+    document.getElementById("submit-btn").disabled = true;
+    document.getElementById("answer-submit-row").classList.remove("hidden");
+    document.getElementById("feedback-area").classList.add("hidden");
 }
 
 async function nextProblem() {
@@ -536,6 +554,8 @@ async function sendMessage() {
     appendBubble("user", message);
     chatHistory.push({ role: "user", content: message });
     stageChatHistory.push({ role: "user", content: message });
+
+    awaitingUserChat = false;  // 사용자 채팅 → 다음 유도 허용
 
     if (isQuality) {
         qualityChatCount++;
