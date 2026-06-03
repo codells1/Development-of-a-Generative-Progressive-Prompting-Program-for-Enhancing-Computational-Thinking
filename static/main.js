@@ -31,7 +31,6 @@ const POST_COMPLETE_NUDGE_DELAY_MS = 600;
 
 let qualityChatCount    = 0;      // 품질 충족 대화 수 (세션 내)
 let inactivityTimer     = null;   // 무입력 타이머
-let countdownInterval   = null;   // 카운트다운 표시 인터벌
 let wrongNudgeTimer     = null;   // 오답 유도 타이머
 let nudgeInProgress     = false;  // 유도 중복 방지
 let allProblemsComplete = false;  // 문제 완료 후 최소 대화 대기 중
@@ -284,37 +283,13 @@ function updateChatCount() {
     }
 }
 
-function _stopCountdown() {
-    if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
-    const el = document.getElementById("inactivity-countdown");
-    if (el) el.classList.add("hidden");
-}
-
-function _startCountdown() {
-    _stopCountdown();
-    let remaining = INACTIVITY_TIMEOUT_SEC;
-    const el = document.getElementById("inactivity-countdown");
-    if (!el) return;
-    const tick = () => {
-        el.textContent = `⏱ ${remaining}s`;
-        if (--remaining < 0) _stopCountdown();
-    };
-    tick();
-    el.classList.remove("hidden");
-    countdownInterval = setInterval(tick, 1000);
-}
-
 function clearInactivityTimer() {
     if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
-    _stopCountdown();
 }
 
 function resetInactivityTimer() {
     clearInactivityTimer();
-    // allProblemsComplete 상태에서도 타이머 유지 (재유도 가능), 단 카운트다운 배지는 숨김
-    if (!allProblemsComplete) _startCountdown();
     inactivityTimer = setTimeout(() => {
-        _stopCountdown();
         triggerNudge("inactivity");
     }, INACTIVITY_TIMEOUT_SEC * 1000);
 }
@@ -357,7 +332,7 @@ async function triggerNudge(reason) {
                 }
                 if (payload.delta) {
                     fullReply += payload.delta;
-                    bubble.textContent = fullReply;
+                    bubble.textContent = fullReply.trimStart();
                     document.getElementById("chat-messages").scrollTop = 9999;
                 }
             }
@@ -395,11 +370,9 @@ function submitAnswer() {
     // 피드백 배지
     const badge = document.getElementById("feedback-badge");
     badge.className = "feedback-badge " + (isCorrect ? "feedback-correct" : "feedback-wrong");
-    badge.textContent = isCorrect
-        ? "✓ 정답"
-        : `✗ 오답 — 정답: ${currentProblemData.answer}`;
+    badge.textContent = isCorrect ? "✓ 정답" : "✗ 오답";
     document.getElementById("feedback-explanation").textContent =
-        currentProblemData.explanation || "";
+        isCorrect ? (currentProblemData.explanation || "") : "";
 
     // 오답: 연한 빨강 배경 + "이해했어요" 버튼만 표시 (다음 문제 잠금)
     // 정답: 바로 "다음 문제 →" 표시
@@ -603,7 +576,7 @@ async function sendMessage() {
                 }
                 if (payload.delta) {
                     fullReply += payload.delta;
-                    bubble.textContent = fullReply;
+                    bubble.textContent = fullReply.trimStart();
                     document.getElementById("chat-messages").scrollTop = 9999;
                 }
             }

@@ -681,22 +681,6 @@ pre {
     border-color: #38a169;
 }
 
-/* ── 무입력 카운트다운 배지 ── */
-.inactivity-countdown {
-    font-size: 11px;
-    font-weight: 700;
-    color: #e6a817;
-    background: #fffbeb;
-    border: 1px solid #f6e05e;
-    border-radius: 20px;
-    padding: 2px 8px;
-    white-space: nowrap;
-}
-
-.inactivity-countdown.hidden {
-    display: none;
-}
-
 /* ── 최소 대화 안내 박스 ── */
 .chat-nudge-msg {
     text-align: center;
