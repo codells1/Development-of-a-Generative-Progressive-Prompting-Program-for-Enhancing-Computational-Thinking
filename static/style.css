@@ -634,3 +634,78 @@ pre {
     font-size: 14px;
     padding: 8px 22px;
 }
+
+/* ── 오답 피드백 블록 ── */
+#feedback-area.wrong-bg {
+    background: #fff5f5;
+    border-top-color: #fc8181;
+}
+
+.feedback-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.ack-btn {
+    background: #718096;
+    font-size: 13px;
+    padding: 5px 14px;
+}
+
+.ack-btn:hover {
+    background: #4a5568;
+}
+
+.ack-btn.hidden,
+#next-btn.hidden {
+    display: none;
+}
+
+/* ── 대화 카운터 배지 (Task 10) ── */
+.chat-count-badge {
+    font-size: 12px;
+    font-weight: 700;
+    color: #a0aec0;
+    background: #f0f2f5;
+    border: 1px solid #d1d5db;
+    border-radius: 20px;
+    padding: 2px 10px;
+    white-space: nowrap;
+}
+
+.chat-count-badge.met {
+    color: #276749;
+    background: #f0fff4;
+    border-color: #38a169;
+}
+
+/* ── 무입력 카운트다운 배지 ── */
+.inactivity-countdown {
+    font-size: 11px;
+    font-weight: 700;
+    color: #e6a817;
+    background: #fffbeb;
+    border: 1px solid #f6e05e;
+    border-radius: 20px;
+    padding: 2px 8px;
+    white-space: nowrap;
+}
+
+.inactivity-countdown.hidden {
+    display: none;
+}
+
+/* ── 최소 대화 안내 박스 ── */
+.chat-nudge-msg {
+    text-align: center;
+    padding: 14px 20px;
+    color: #744210;
+    font-size: 14px;
+    line-height: 1.8;
+    background: #fffbeb;
+    border: 1px solid #f6e05e;
+    border-radius: 10px;
+    margin: 12px 16px;
+}

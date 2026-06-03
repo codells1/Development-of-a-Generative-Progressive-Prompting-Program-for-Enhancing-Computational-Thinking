@@ -74,19 +74,6 @@ def save_feedback(session_id: str, topic: str, ct: dict, prompt: dict) -> None:
         print(f"피드백 저장 오류: {e}")
 
 
-def _latest_feedback(session_id: str) -> dict | None:
-    """주어진 session_id의 가장 최근 피드백을 반환한다. 없으면 None."""
-    if not os.path.exists(FEEDBACK_FILE):
-        return None
-    try:
-        with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
-            records = json.load(f)
-        matches = [r for r in records if r.get("session_id") == session_id]
-        return matches[-1] if matches else None
-    except Exception:
-        return None
-
-
 def _parse_mcq(raw: str) -> dict:
     """MCQ JSON 파싱 + 구조 검증. 실패 시 ValueError."""
     m = re.search(r'\{.*\}', raw, re.DOTALL)
@@ -238,6 +225,41 @@ def chat():
         full_reply = "".join(full_reply_holder)
         user_message = history[-1]["content"] if history else ""
         save_turn(session_id, user_message, full_reply, code_context)
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
+
+@api.route("/chat-nudge", methods=["POST"])
+def chat_nudge():
+    """챗봇 선제 유도 — 오답 시 또는 무입력 시 챗봇이 먼저 소크라테스 질문을 던진다."""
+    data = request.get_json()
+    messages        = data.get("messages", [])
+    session_id      = data.get("session_id", "unknown")
+    code_context    = data.get("code_context")
+    current_problem = data.get("current_problem")
+    weak_ct         = data.get("weak_ct")
+    reason          = data.get("reason", "inactivity")
+
+    system = llm.build_nudge_system(code_context, current_problem, reason, weak_ct)
+    full_messages = [{"role": "system", "content": system}] + messages
+    full_reply_holder = []
+
+    def generate():
+        try:
+            stream = llm.stream_chatbot(full_messages)
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    full_reply_holder.append(delta)
+                    yield f"data: {json.dumps({'delta': delta})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            return
+
+        full_reply = "".join(full_reply_holder)
+        if full_reply:
+            save_turn(session_id, f"[챗봇 유도: {reason}]", full_reply, code_context)
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream")

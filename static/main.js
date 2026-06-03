@@ -16,6 +16,27 @@ let isFusion = false;
 // 수준 2: 직전 세션·단계의 CT 약점 (챗봇 프롬프트 주입용)
 let prevWeakCt = null;
 
+// ── 대화 최소 조건 설정값 (여기서만 수정) ───────────────────────
+// 세션 내 의미 있는 대화로 인정받는 최소 횟수 (권장 5~8)
+const MIN_CHAT_TURNS             = 6;
+// 마지막 입력 후 챗봇이 먼저 말을 거는 무입력 대기 시간, 초 (권장 30~90)
+const INACTIVITY_TIMEOUT_SEC     = 45;
+// 의미 있는 메시지로 인정하는 최소 자수 — 단답 제외 (권장 8~15)
+const MIN_MSG_LEN                = 10;
+// 오답 판정 후 챗봇 유도 메시지를 보내기까지의 딜레이, ms (권장 1000~3000)
+const WRONG_NUDGE_DELAY_MS       = 1500;
+// 문제 전체 완료 후 첫 유도 메시지를 보내기까지의 딜레이, ms
+const POST_COMPLETE_NUDGE_DELAY_MS = 600;
+// ────────────────────────────────────────────────────────────────
+
+let qualityChatCount    = 0;      // 품질 충족 대화 수 (세션 내)
+let inactivityTimer     = null;   // 무입력 타이머
+let countdownInterval   = null;   // 카운트다운 표시 인터벌
+let wrongNudgeTimer     = null;   // 오답 유도 타이머
+let nudgeInProgress     = false;  // 유도 중복 방지
+let allProblemsComplete = false;  // 문제 완료 후 최소 대화 대기 중
+let stageChatHistory    = [];     // 현 단계 전용 대화 기록 (CT 측정용, 단계 전환마다 초기화)
+
 const CT_TIP = {
     "분해":          "코드를 역할별로 나눠서 각 부분이 어떻게 동작하는지 질문해보세요.",
     "패턴인식":      "코드에서 반복되는 패턴이나 규칙을 발견하는 질문을 해보세요.",
@@ -25,6 +46,7 @@ const CT_TIP = {
 
 async function init() {
     checkStatus();
+    updateChatCount();   // 배지를 상수값으로 즉시 초기화
     await loadPreviousFeedback();
 }
 
@@ -117,6 +139,11 @@ async function generateCode() {
     submittedAnswers = [];
     currentProblemData = null;
     selectedOption = null;
+    qualityChatCount = 0;
+    allProblemsComplete = false;
+    stageChatHistory = [];
+    clearInactivityTimer();
+    updateChatCount();
 
     document.getElementById("topic-label").textContent = stageLabel;
     setOverlay(true, `${stageLabel} 코드 만드는 중...`);
@@ -146,6 +173,7 @@ async function generateCode() {
 
         setOverlay(true, `문제 1 / ${TOTAL_PROBLEMS} 만드는 중...`);
         await generateNextProblem();
+        resetInactivityTimer();
     } catch (e) {
         codeBlock.innerHTML = `<code style="color:#e53e3e">오류: ${e.message}</code>`;
     } finally {
@@ -221,7 +249,13 @@ async function generateNextProblem() {
 
         renderOptions(data.options);
         document.getElementById("submit-btn").disabled = true;
-        document.getElementById("feedback-area").classList.add("hidden");
+
+        const feedbackArea = document.getElementById("feedback-area");
+        feedbackArea.classList.add("hidden");
+        feedbackArea.classList.remove("wrong-bg");
+        document.getElementById("ack-btn").classList.add("hidden");
+        document.getElementById("next-btn").classList.add("hidden");
+
         document.getElementById("answer-submit-row").classList.remove("hidden");
         answerArea.classList.add("visible");
     } catch (e) {
@@ -229,6 +263,116 @@ async function generateNextProblem() {
         problemDisplay.className = "text-display";
         problemDisplay.style.color = "#e53e3e";
         problemDisplay.textContent = `문제 생성 오류: ${e.message}`;
+    }
+}
+
+// ── Task 10: 대화 최소 조건 헬퍼 ────────────────────────────────
+
+function isQualityMessage(msg) {
+    return msg.trim().length >= MIN_MSG_LEN;
+}
+
+function updateChatCount() {
+    const el = document.getElementById("chat-count");
+    if (!el) return;
+    const met = qualityChatCount >= MIN_CHAT_TURNS;
+    el.textContent = `${qualityChatCount} / ${MIN_CHAT_TURNS}회`;
+    el.className = "chat-count-badge" + (met ? " met" : "");
+    const remainingEl = document.getElementById("remaining-count");
+    if (remainingEl) {
+        remainingEl.textContent = Math.max(0, MIN_CHAT_TURNS - qualityChatCount);
+    }
+}
+
+function _stopCountdown() {
+    if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+    const el = document.getElementById("inactivity-countdown");
+    if (el) el.classList.add("hidden");
+}
+
+function _startCountdown() {
+    _stopCountdown();
+    let remaining = INACTIVITY_TIMEOUT_SEC;
+    const el = document.getElementById("inactivity-countdown");
+    if (!el) return;
+    const tick = () => {
+        el.textContent = `⏱ ${remaining}s`;
+        if (--remaining < 0) _stopCountdown();
+    };
+    tick();
+    el.classList.remove("hidden");
+    countdownInterval = setInterval(tick, 1000);
+}
+
+function clearInactivityTimer() {
+    if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+    _stopCountdown();
+}
+
+function resetInactivityTimer() {
+    clearInactivityTimer();
+    // allProblemsComplete 상태에서도 타이머 유지 (재유도 가능), 단 카운트다운 배지는 숨김
+    if (!allProblemsComplete) _startCountdown();
+    inactivityTimer = setTimeout(() => {
+        _stopCountdown();
+        triggerNudge("inactivity");
+    }, INACTIVITY_TIMEOUT_SEC * 1000);
+}
+
+async function triggerNudge(reason) {
+    if (nudgeInProgress) return;
+    nudgeInProgress = true;
+
+    const bubble = appendBubble("assistant", "");
+    let fullReply = "";
+
+    try {
+        const res = await fetch("/api/chat-nudge", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                messages: chatHistory,
+                session_id: sessionId,
+                code_context: currentCode,
+                current_problem: currentProblemData ? currentProblemData.question : null,
+                weak_ct: prevWeakCt,
+                reason,
+            }),
+        });
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const lines = decoder.decode(value).split("\n");
+            for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                const payload = JSON.parse(line.slice(6));
+                if (payload.error) {
+                    bubble.className = "chat-bubble error";
+                    bubble.textContent = payload.error;
+                    return;
+                }
+                if (payload.delta) {
+                    fullReply += payload.delta;
+                    bubble.textContent = fullReply;
+                    document.getElementById("chat-messages").scrollTop = 9999;
+                }
+            }
+        }
+
+        if (fullReply) {
+            chatHistory.push({ role: "assistant", content: fullReply });
+            stageChatHistory.push({ role: "assistant", content: fullReply });
+        }
+    } catch (e) {
+        bubble.className = "chat-bubble error";
+        bubble.textContent = "유도 메시지 오류";
+    } finally {
+        nudgeInProgress = false;
+        resetInactivityTimer();   // allProblemsComplete 여부 무관하게 재시작
     }
 }
 
@@ -248,7 +392,7 @@ function submitAnswer() {
         }
     });
 
-    // 피드백 표시
+    // 피드백 배지
     const badge = document.getElementById("feedback-badge");
     badge.className = "feedback-badge " + (isCorrect ? "feedback-correct" : "feedback-wrong");
     badge.textContent = isCorrect
@@ -257,20 +401,57 @@ function submitAnswer() {
     document.getElementById("feedback-explanation").textContent =
         currentProblemData.explanation || "";
 
+    // 오답: 연한 빨강 배경 + "이해했어요" 버튼만 표시 (다음 문제 잠금)
+    // 정답: 바로 "다음 문제 →" 표시
+    const feedbackArea = document.getElementById("feedback-area");
+    const ackBtn  = document.getElementById("ack-btn");
+    const nextBtn = document.getElementById("next-btn");
+
+    if (isCorrect) {
+        feedbackArea.classList.remove("wrong-bg");
+        ackBtn.classList.add("hidden");
+        nextBtn.classList.remove("hidden");
+    } else {
+        feedbackArea.classList.add("wrong-bg");
+        ackBtn.classList.remove("hidden");
+        nextBtn.classList.add("hidden");
+        wrongNudgeTimer = setTimeout(() => triggerNudge("wrong_answer"), WRONG_NUDGE_DELAY_MS);
+    }
+
     document.getElementById("answer-submit-row").classList.add("hidden");
-    document.getElementById("feedback-area").classList.remove("hidden");
+    feedbackArea.classList.remove("hidden");
+}
+
+function acknowledgeWrong() {
+    if (wrongNudgeTimer) { clearTimeout(wrongNudgeTimer); wrongNudgeTimer = null; }
+    document.getElementById("ack-btn").classList.add("hidden");
+    document.getElementById("next-btn").classList.remove("hidden");
 }
 
 async function nextProblem() {
     currentProblemIndex++;
 
     if (currentProblemIndex >= TOTAL_PROBLEMS) {
+        clearInactivityTimer();
+        document.getElementById("problem-count").textContent = "완료";
         const problemDisplay = document.getElementById("problem-display");
         const answerArea = document.getElementById("answer-area");
-        document.getElementById("problem-count").textContent = "완료";
+        answerArea.classList.remove("visible");
+
+        if (qualityChatCount < MIN_CHAT_TURNS) {
+            allProblemsComplete = true;
+            const remaining = MIN_CHAT_TURNS - qualityChatCount;
+            problemDisplay.className = "text-display";
+            problemDisplay.innerHTML =
+                `<div class="complete-msg">모든 문제를 완료했어요!</div>` +
+                `<div class="chat-nudge-msg">평가 전에 챗봇과 조금 더 대화해볼까요?<br>` +
+                `<span id="remaining-count">${remaining}</span>회 더 질문하면 평가가 시작됩니다.</div>`;
+            setTimeout(() => triggerNudge("inactivity"), POST_COMPLETE_NUDGE_DELAY_MS);
+            return;
+        }
+
         problemDisplay.className = "text-display";
         problemDisplay.innerHTML = `<div class="complete-msg">모든 문제를 완료했습니다! 평가 중...</div>`;
-        answerArea.classList.remove("visible");
         await triggerEvaluation();
         return;
     }
@@ -284,6 +465,7 @@ async function nextProblem() {
 }
 
 async function triggerEvaluation() {
+    clearInactivityTimer();
     setOverlay(true, "학습 결과 평가 중...");
     try {
         const res = await fetch("/api/evaluate", {
@@ -295,7 +477,7 @@ async function triggerEvaluation() {
                 code: currentCode,
                 problems: previousProblems,
                 answers: submittedAnswers,
-                chat_history: chatHistory,
+                chat_history: stageChatHistory,
             }),
         });
         const data = await res.json();
@@ -373,10 +555,19 @@ async function sendMessage() {
     const message = input.value.trim();
     if (!message) return;
 
+    const isQuality = isQualityMessage(message);
+
     input.value = "";
     input.disabled = true;
     appendBubble("user", message);
     chatHistory.push({ role: "user", content: message });
+    stageChatHistory.push({ role: "user", content: message });
+
+    if (isQuality) {
+        qualityChatCount++;
+        updateChatCount();
+    }
+    resetInactivityTimer();
 
     const bubble = appendBubble("assistant", "");
     let fullReply = "";
@@ -419,6 +610,15 @@ async function sendMessage() {
         }
 
         chatHistory.push({ role: "assistant", content: fullReply });
+        stageChatHistory.push({ role: "assistant", content: fullReply });
+
+        // 문제 완료 후 최소 대화 달성 → 평가 자동 진입
+        if (isQuality && allProblemsComplete && qualityChatCount >= MIN_CHAT_TURNS) {
+            allProblemsComplete = false;
+            const problemDisplay = document.getElementById("problem-display");
+            problemDisplay.innerHTML = `<div class="complete-msg">대화 완료! 평가를 시작합니다...</div>`;
+            await triggerEvaluation();
+        }
     } finally {
         input.disabled = false;
         input.focus();

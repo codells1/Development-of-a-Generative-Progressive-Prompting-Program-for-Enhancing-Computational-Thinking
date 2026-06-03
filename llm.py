@@ -230,6 +230,20 @@ _CT_GUIDANCE = {
 }
 
 
+_NUDGE_CONTEXT = {
+    "wrong_answer": (
+        "학생이 방금 문제를 틀렸습니다. "
+        "정답을 직접 알려주지 말고, 코드의 어느 부분을 다시 살펴봐야 할지 "
+        "가볍게 유도하는 질문을 먼저 건네세요."
+    ),
+    "inactivity": (
+        "학생이 한동안 질문하지 않고 있습니다. "
+        "학생이 막혀 있을 수 있으니 먼저 말을 걸어 "
+        "현재 코드나 문제와 관련된 생각거리를 제시하는 질문을 건네세요."
+    ),
+}
+
+
 def build_chat_system(
     code_context: str = None,
     current_problem: str = None,
@@ -247,6 +261,19 @@ def build_chat_system(
         system += f"\n\n[현재 학습 중인 코드]\n{code_context}"
     if current_problem:
         system += f"\n\n[현재 풀고 있는 문제]\n{current_problem}"
+    return system
+
+
+def build_nudge_system(
+    code_context: str = None,
+    current_problem: str = None,
+    reason: str = "inactivity",
+    weak_ct: str = None,
+) -> str:
+    """챗봇 선제 유도용 시스템 프롬프트. reason에 따라 상황 힌트를 추가한다."""
+    system = build_chat_system(code_context, current_problem, weak_ct)
+    hint = _NUDGE_CONTEXT.get(reason, _NUDGE_CONTEXT["inactivity"])
+    system += f"\n\n[지금 해야 할 일]\n{hint}"
     return system
 
 

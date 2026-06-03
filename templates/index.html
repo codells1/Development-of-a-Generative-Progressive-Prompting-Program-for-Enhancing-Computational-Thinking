@@ -79,7 +79,10 @@
                 <div id="feedback-area" class="hidden">
                     <div id="feedback-badge" class="feedback-badge"></div>
                     <p id="feedback-explanation" class="feedback-explanation"></p>
-                    <button onclick="nextProblem()">다음 문제 →</button>
+                    <div class="feedback-actions">
+                        <button id="ack-btn" class="ack-btn hidden" onclick="acknowledgeWrong()">이해했어요 ✓</button>
+                        <button id="next-btn" class="hidden" onclick="nextProblem()">다음 문제 →</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -87,6 +90,8 @@
         <div class="quadrant chat-panel">
             <div class="quadrant-header">
                 <span class="label">챗봇</span>
+                <span id="chat-count" class="chat-count-badge">0 / 6회</span>
+                <span id="inactivity-countdown" class="inactivity-countdown hidden"></span>
                 <span id="lm-status" class="lm-status">● 연결 확인 중...</span>
             </div>
             <div id="chat-messages"></div>
