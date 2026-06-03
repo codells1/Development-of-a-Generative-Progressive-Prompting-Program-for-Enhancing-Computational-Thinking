@@ -8,6 +8,10 @@ import llm
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
+# 컨텍스트 초과 방지: LLM에 전달하는 대화 히스토리 최대 메시지 수 (user+assistant 합산)
+# 줄이면 컨텍스트 안전, 늘리면 더 긴 맥락 유지. 기본 16 = 약 8턴
+MAX_HISTORY_MSGS = 16
+
 CONVERSATIONS_FILE = os.path.join(os.path.dirname(__file__), "conversations.json")
 
 STAGE_MAP = {
@@ -250,7 +254,9 @@ def chat():
     current_problem = data.get("current_problem")
     weak_ct = data.get("weak_ct")  # Task 3에서 프론트가 전달; 없으면 None → 표준 프롬프트
 
-    messages = [{"role": "system", "content": llm.build_chat_system(code_context, current_problem, weak_ct)}] + history
+    # 컨텍스트 초과 방지: 최근 MAX_HISTORY_MSGS개만 유지 (시스템 메시지는 별도)
+    trimmed = history[-MAX_HISTORY_MSGS:] if len(history) > MAX_HISTORY_MSGS else history
+    messages = [{"role": "system", "content": llm.build_chat_system(code_context, current_problem, weak_ct)}] + trimmed
     full_reply_holder = []
 
     def generate():
@@ -264,7 +270,7 @@ def chat():
             return
 
         full_reply = "".join(full_reply_holder)
-        user_message = history[-1]["content"] if history else ""
+        user_message = history[-1]["content"] if history else ""  # 원본 history에서 저장
         save_turn(session_id, user_message, full_reply, code_context)
         yield f"data: {json.dumps({'done': True})}\n\n"
 
@@ -282,8 +288,10 @@ def chat_nudge():
     weak_ct         = data.get("weak_ct")
     reason          = data.get("reason", "inactivity")
 
+    # 컨텍스트 초과 방지: 최근 MAX_HISTORY_MSGS개만 유지
+    trimmed = messages[-MAX_HISTORY_MSGS:] if len(messages) > MAX_HISTORY_MSGS else messages
     system = llm.build_nudge_system(code_context, current_problem, reason, weak_ct)
-    full_messages = [{"role": "system", "content": system}] + messages
+    full_messages = [{"role": "system", "content": system}] + trimmed
 
     # 마지막 메시지가 assistant 또는 없을 때 Qwen3가 응답을 생성하지 않으므로 user 트리거 추가
     if not full_messages or full_messages[-1].get("role") != "user":
