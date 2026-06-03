@@ -2,6 +2,8 @@ from flask import Blueprint, request, jsonify, Response, stream_with_context
 import json
 import re
 import os
+import subprocess
+import sys
 from datetime import datetime
 import rag as rag_store
 import llm
@@ -137,6 +139,48 @@ def _parse_mcq(raw: str) -> dict:
     return data
 
 
+def _verify_answer(problem_data: dict) -> str | None:
+    """
+    verification_code를 subprocess로 실제 실행해 정답 라벨을 반환한다.
+    - 코드가 비어있거나 실행 실패 시 None → LLM answer 그대로 유지.
+    - 옵션 텍스트와 출력값을 문자열/float 두 방식으로 비교한다.
+    """
+    code = (problem_data.get("verification_code") or "").strip()
+    if not code:
+        return None
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    actual = result.stdout.strip()
+    if not actual:
+        return None
+
+    for opt in problem_data.get("options", []):
+        if ". " not in opt:
+            continue
+        label, text = opt.split(". ", 1)
+        text = text.strip()
+        if text == actual:
+            return label
+        # float 근사 비교 (예: 86.6 vs 86.60000000000001)
+        try:
+            if abs(float(text) - float(actual)) < 1e-6:
+                return label
+        except ValueError:
+            pass
+
+    return None
+
+
 @api.route("/status", methods=["GET"])
 def status():
     try:
@@ -188,6 +232,15 @@ def generate_problem():
         try:
             raw = llm.call_problem_gen(code, ct_skill, difficulty, templates, previous, problem_index)
             problem_data = _parse_mcq(raw)
+
+            # 실제 코드 실행으로 정답 확정 (성공 시 LLM answer 덮어쓰기)
+            verified = _verify_answer(problem_data)
+            if verified:
+                problem_data["answer"] = verified
+
+            # verification_code는 학생에게 노출하지 않음
+            problem_data.pop("verification_code", None)
+
             problem_data["ct_skill"]   = ct_skill
             problem_data["difficulty"] = difficulty
             return jsonify(problem_data)

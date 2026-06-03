@@ -64,9 +64,17 @@ SYSTEM_PROBLEM = (
     '{"question": "문제 본문", '
     '"options": ["A. 보기1", "B. 보기2", "C. 보기3", "D. 보기4"], '
     '"answer": "B", '
+    '"verification_code": "...", '
     '"explanation": "정답 해설 1~2문장", '
     '"ct_skill": "CT요소명", '
     '"difficulty": "난이도명"}\n'
+    "verification_code rules:\n"
+    "- Write a STANDALONE Python snippet that prints ONLY the answer value to stdout.\n"
+    "- Copy all required variable definitions from the original code into this snippet.\n"
+    "- Example: if the question asks the output of `total = sum([1,2,3]); print(total)`, "
+    'write verification_code = "total = sum([1,2,3])\\nprint(total)"\n'
+    "- For conceptual questions where the answer cannot be computed by running code "
+    "(e.g. abstraction, decomposition type), set verification_code to empty string \"\".\n"
     "Rules: exactly 4 options labeled A/B/C/D, answer is one capital letter, "
     "wrong options are plausible but clearly incorrect, vary correct answer position."
 )
