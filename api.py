@@ -243,6 +243,11 @@ def chat_nudge():
 
     system = llm.build_nudge_system(code_context, current_problem, reason, weak_ct)
     full_messages = [{"role": "system", "content": system}] + messages
+
+    # 마지막 메시지가 assistant 또는 없을 때 Qwen3가 응답을 생성하지 않으므로 user 트리거 추가
+    if not full_messages or full_messages[-1].get("role") != "user":
+        full_messages.append({"role": "user", "content": "/no_think"})
+
     full_reply_holder = []
 
     def generate():

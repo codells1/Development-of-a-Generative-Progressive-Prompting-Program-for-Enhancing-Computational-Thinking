@@ -347,7 +347,7 @@ async function triggerNudge(reason) {
         bubble.textContent = "유도 메시지 오류";
     } finally {
         nudgeInProgress = false;
-        resetInactivityTimer();   // allProblemsComplete 여부 무관하게 재시작
+        // 타이머 재시작 안 함 — 사용자가 메시지를 보낼 때(sendMessage)만 재시작
     }
 }
 
