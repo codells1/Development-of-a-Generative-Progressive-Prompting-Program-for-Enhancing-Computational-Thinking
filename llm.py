@@ -101,18 +101,35 @@ SYSTEM_CT_ANALYSIS = (
 
 SYSTEM_PROMPT_EVAL = (
     "You are an educational assessment AI.\n"
-    "Evaluate the QUALITY of the student's prompts/questions based on their chat log.\n\n"
-    "Prompting Rubric (score each element 1~5):\n"
-    "- 명확성(1~5): 질문이 명확하고 이해하기 쉬운가\n"
-    "- 구체성(1~5): 코드·문제와 연관된 구체적 질문인가\n"
-    "- 맥락제공(1~5): 학습 내용과 관련된 배경·맥락을 충분히 포함했는가\n"
-    "- 관련성(1~5): 현재 학습 주제와 관련된 질문인가\n"
-    "- 자기주도성(1~5): 스스로 생각하고 탐구하려는 의지가 보이는가\n"
-    "- 발전성(1~5): 이전 질문보다 더 깊이 발전시켜 나갔는가\n\n"
-    "If no student chat messages exist, score all elements 1.\n\n"
-    'Respond ONLY with valid JSON (no markdown, no extra text):\n'
-    '{"명확성": 점수, "구체성": 점수, "맥락제공": 점수, "관련성": 점수, '
-    '"자기주도성": 점수, "발전성": 점수, "feedback": "한국어 피드백 2~3문장"}'
+    "Analyze ONLY the student's chat messages and score their computational thinking "
+    "with the rubric below. Do NOT use quiz answer correctness — focus on HOW the "
+    "student questioned and reasoned.\n\n"
+    "CT Rubric — score each indicator 1(미흡) / 2(보통) / 3(우수):\n"
+    "- 문제분해: 1=코드를 통째로 '이게 다 뭐 하는지/전부 해결해줘'식으로 질문. "
+    "2=함수·블록 단위로 나눠 묻지만 부분 간 연결(입출력·순서) 고려 없음. "
+    "3=의미 단위로 나누고 각 부분의 입력·출력과 부분 간 순서·관계까지 고려해 질문.\n"
+    "- 용어사용: 1='돌아가는 거/그거'처럼 일상어만 쓰고 프로그래밍 용어 안 씀. "
+    "2=용어를 쓰지만 부정확(예: 변수를 함수라 부름)하거나 일상어와 섞음. "
+    "3=변수·함수·매개변수·반환값 등 핵심 용어를 의미에 맞게 정확히 사용.\n"
+    "- 추상화: 1=모든 줄을 똑같이 보고 핵심 로직과 부수 코드를 구분 못 함. "
+    "2=핵심은 짚지만 부수적 부분(초기화·출력형식)과 핵심 로직의 경계가 흐림. "
+    "3=핵심 로직과 보조 코드를 명확히 구분하고 그 코드가 결국 무엇을 하는지 한 문장으로 요약.\n"
+    "- 실행흐름: 1=실행 순서를 안 따지고 결과·답만 요청. "
+    "2=처리 순서를 대략 설명하나 조건 분기·반복의 시작/종료에서 흐름을 놓침. "
+    "3=순차·조건·반복 구조를 따라 실행 순서를 정확히 추적하며 특정 지점의 흐름을 질문.\n"
+    "- 자료표현: 1=데이터(입력·출력·변수) 언급 없이 결과만 요청. "
+    "2=데이터 형태(숫자·문자 등)나 변수 쓰임은 언급하나 자료구조·타입을 정확히 못 짚음. "
+    "3=변수 타입과 자료구조(리스트·딕셔너리 등)를 정확히 짚고 그 선택 이유까지 설명.\n"
+    "- 동작확인: 1=AI가 준 코드를 왜 그런지 안 따지고 그대로 씀. "
+    "2=출력 결과엔 관심 있으나 왜 그렇게 동작하는지는 안 물음. "
+    "3=각 부분이 왜 필요하고 어떻게 동작하는지 구체적으로 묻고, 결과가 기대와 다르면 문제 지점을 짚어 수정 방향을 요청.\n"
+    "- 자기해결: 1=스스로 시도 없이 '정답이 뭐예요'식으로 답만 요구. "
+    "2=힌트를 요청하나 받은 힌트를 스스로 적용해 보지 않고 다시 답을 요구하거나 멈춤. "
+    "3=힌트를 받아 스스로 적용·확인하고 나아가 자신의 아이디어를 담아 문제 해결을 시도.\n\n"
+    "If no student chat messages exist, score every indicator 1.\n\n"
+    "Respond ONLY with valid JSON (no markdown, no extra text):\n"
+    '{"문제분해": 점수, "용어사용": 점수, "추상화": 점수, "실행흐름": 점수, '
+    '"자료표현": 점수, "동작확인": 점수, "자기해결": 점수, "feedback": "한국어 피드백 2~3문장"}'
 )
 
 

@@ -26,7 +26,8 @@ STAGE_MAP = {
 FUSION_TOPIC = "융합"
 
 CT_SKILLS     = ("분해", "패턴인식", "추상화", "알고리즘적사고")
-PROMPT_SKILLS = ("명확성", "구체성", "맥락제공", "관련성", "자기주도성", "발전성")
+# CT 루브릭 7지표 (각 1~3점: 미흡/보통/우수) — SYSTEM_PROMPT_EVAL과 키가 일치해야 함
+PROMPT_SKILLS = ("문제분해", "용어사용", "추상화", "실행흐름", "자료표현", "동작확인", "자기해결")
 
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback.json")
 
@@ -96,8 +97,16 @@ def _extract_json(raw: str) -> dict:
     return json.loads(m.group())
 
 
+def _safe_int(value, default: int = 1) -> int:
+    """LLM이 null·문자열·소수를 줘도 안전하게 정수로 변환한다."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def save_feedback(session_id: str, topic: str, ct: dict, prompt: dict) -> None:
-    """CT 4요소 점수 + 프롬프팅 6요소 점수를 feedback.json에 누적 저장한다."""
+    """CT 4요소 점수 + CT 루브릭 7지표 점수를 feedback.json에 누적 저장한다."""
     try:
         records = []
         if os.path.exists(FEEDBACK_FILE):
@@ -149,10 +158,16 @@ def _verify_answer(problem_data: dict) -> str | None:
     if not code:
         return None
 
+    # 자식 프로세스가 한글을 UTF-8로 출력하도록 강제 (Windows 기본 cp949 회피)
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+
     try:
         result = subprocess.run(
             [sys.executable, "-c", code],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, timeout=5,
+            encoding="utf-8", errors="replace",  # 부모도 UTF-8로 디코딩
+            env=env,
         )
     except Exception:
         return None
@@ -160,7 +175,7 @@ def _verify_answer(problem_data: dict) -> str | None:
     if result.returncode != 0:
         return None
 
-    actual = result.stdout.strip()
+    actual = (result.stdout or "").strip()
     if not actual:
         return None
 
@@ -400,7 +415,7 @@ def evaluate():
         pr_raw = _extract_json(llm.call_prompt_eval(log_text))
 
         # CT 4요소 점수 정규화 (1~5 클램핑)
-        ct_scores = {k: max(1, min(5, int(ct_raw.get(k, 1)))) for k in CT_SKILLS}
+        ct_scores = {k: max(1, min(5, _safe_int(ct_raw.get(k, 1)))) for k in CT_SKILLS}
 
         # weak_ct 보정: LLM 산출값이 유효 키가 아니면 최솟값 키로 재계산
         weak_ct = ct_raw.get("weak_ct", "")
@@ -410,9 +425,10 @@ def evaluate():
         # 평균(1~5) → 100점 환산 (프론트 현행 호환)
         ct_score = round(sum(ct_scores.values()) / len(ct_scores) * 20)
 
-        # 프롬프팅 6요소 점수 정규화
-        prompt_scores = {k: max(1, min(5, int(pr_raw.get(k, 1)))) for k in PROMPT_SKILLS}
-        prompt_score  = round(sum(prompt_scores.values()) / len(prompt_scores) * 20)
+        # CT 루브릭 7지표 점수 정규화 (1~3 클램핑)
+        prompt_scores = {k: max(1, min(3, _safe_int(pr_raw.get(k, 1)))) for k in PROMPT_SKILLS}
+        # 평균(1~3) → 100점 환산 (우수3=100, 보통2≈67, 미흡1≈33)
+        prompt_score  = round(sum(prompt_scores.values()) / len(prompt_scores) / 3 * 100)
 
         # feedback.json 저장
         save_feedback(
@@ -426,7 +442,7 @@ def evaluate():
             "weak_ct":         weak_ct,
             "ct_score":        ct_score,            # 현 프론트용 단일 점수
             "ct_feedback":     ct_raw.get("feedback", ""),
-            "prompt_scores":   prompt_scores,       # 6요소 각 점수
+            "prompt_scores":   prompt_scores,       # CT 루브릭 7지표 각 점수
             "prompt_score":    prompt_score,
             "prompt_feedback": pr_raw.get("feedback", ""),
         })
