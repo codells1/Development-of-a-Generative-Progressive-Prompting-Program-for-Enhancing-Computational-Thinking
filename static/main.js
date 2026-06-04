@@ -349,7 +349,13 @@ async function triggerChatbot(triggerType) {
             bubble.textContent = fullReply;
             document.getElementById("chat-messages").scrollTop = 9999;
         });
-        chatHistory.push({ role: "assistant", content: fullReply });
+        fullReply = fullReply.trim();
+        if (fullReply) {
+            bubble.textContent = fullReply;
+            chatHistory.push({ role: "assistant", content: fullReply });
+        } else {
+            bubble.remove();   // 빈 응답이면 빈 말풍선을 남기지 않는다
+        }
     } catch (e) {
         bubble.className = "chat-bubble error";
         bubble.textContent = `오류: ${e.message}`;
@@ -397,7 +403,13 @@ async function sendMessage() {
             bubble.textContent = fullReply;
             document.getElementById("chat-messages").scrollTop = 9999;
         });
-        chatHistory.push({ role: "assistant", content: fullReply });
+        fullReply = fullReply.trim();
+        if (fullReply) {
+            bubble.textContent = fullReply;
+            chatHistory.push({ role: "assistant", content: fullReply });
+        } else {
+            bubble.remove();   // 빈 응답이면 빈 말풍선을 남기지 않는다
+        }
     } catch (e) {
         bubble.className = "chat-bubble error";
         bubble.textContent = `오류: ${e.message}`;

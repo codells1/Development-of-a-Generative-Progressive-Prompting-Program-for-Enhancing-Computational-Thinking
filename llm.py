@@ -96,7 +96,7 @@ SYSTEM_PROBLEM = (
 
 # Stage 2 구조화 출력 강제용 JSON Schema (code_reading_generation.md §4).
 # bare json_object가 아니라 json_schema로 넘겨 필드·타입·배열 길이·완결성까지 디코더가 강제한다.
-# (ct_skill 값은 enum으로 제한하되, 순서 분해→통합 강제는 _parse_problem_set이 담당.)
+# (ct_skill 값은 enum으로 제한하되, 순서·구성 분해→통합 각 1개 보정은 api._reconcile_skills가 담당.)
 PROBLEM_SET_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -334,9 +334,9 @@ SYSTEM_SINGLE_PROBLEM = (
     "규칙:\n"
     "1. 보기 정확히 4개(A/B/C/D), 정답 1개. 오답도 그럴듯하게.\n"
     "2. answer_type 분류:\n"
-    "   - 'computational': 코드를 실행하면 값이 하나로 정해지는 문항. verification_snippet은 정답 값 하나만 print하는 자족 실행 코드, input()·파일·네트워크 금지.\n"
+    "   - 'computational': 코드를 실행하면 값이 하나로 정해지는 문항. verification_snippet은 필요한 함수 정의를 모두 그 안에 포함한 자족(self-contained) 실행 코드로, 정답 값 하나만 print 한다. 위 코드의 함수를 쓰려면 그 정의를 스니펫 안에 다시 적어라. input()·파일·네트워크 금지.\n"
     "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻는 문항. verification_snippet은 \"\".\n"
-    "3. computational이면 보기의 값 형식과 verification_snippet의 print 출력을 정확히 일치시킨다.\n"
+    "3. computational이면 보기 값(라벨 뒤)에 단위·접미사(번/개/원/명/회 등)나 따옴표를 붙이지 말고, verification_snippet의 print 출력과 글자 그대로 정확히 일치시킨다 (예: 5를 출력하면 'A. 5', 'A. 5회' 금지).\n"
     "4. focus_points: 1~3개의 한국어 문자열 배열. 정답을 그대로 적지 말고 학생이 풀이를 떠올리는 '생각의 단서'로 적는다.\n\n"
     'JSON 형식:\n'
     '{"ct_skill": "지정된 CT 요소", "question": "...", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], '

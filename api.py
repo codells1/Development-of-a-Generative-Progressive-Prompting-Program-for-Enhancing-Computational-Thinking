@@ -228,10 +228,9 @@ def _parse_problem_set(raw: str) -> dict:
     for i, q in enumerate(questions):
         _validate_question(q, f"q{i}")
 
-    skills = tuple(q.get("ct_skill") for q in questions)
-    if skills != PROBLEM_CT_SKILLS:
-        raise ValueError(f"ct_skill 순서 오류: {skills} (기대: {PROBLEM_CT_SKILLS})")
-
+    # ct_skill 구성·순서(분해→통합, 각 1개)는 여기서 하드 실패시키지 않는다.
+    # 모델이 한 유형을 중복하거나 누락해도 _reconcile_skills가 보정·보충하므로
+    # 세트 전체를 버리고 재시도(503)하던 근본 원인을 제거한다.
     return {
         "title":     (data.get("title") or "").strip(),
         "summary":   (data.get("summary") or "").strip(),
@@ -246,17 +245,81 @@ def _option_value(option_text: str, label: str) -> str:
     return (m.group(1).strip() if m else text)
 
 
-def _run_verification_snippet(snippet: str) -> str:
+_NUM_RE       = re.compile(r"-?\d[\d,]*\.?\d*")
+_CLEAN_NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*$")
+
+
+def _to_number(s: str):
+    """문자열에서 첫 숫자(부호·천단위쉼표·소수점 포함)를 추출해 int/float로. 없으면 None."""
+    m = _NUM_RE.search(s.replace(" ", ""))
+    if not m:
+        return None
+    try:
+        f = float(m.group().replace(",", ""))
+    except ValueError:
+        return None
+    return int(f) if f.is_integer() else f
+
+
+def _values_match(actual: str, expected: str) -> bool:
+    """실행 stdout과 정답 보기 값의 일치 여부를 표면 차이에 관대하게 판정한다.
+
+    근본 원인 대응: 모델이 보기 값에 단위·접미사(회/개/원/명/번 등)나 따옴표·천단위
+    쉼표를 붙여 stdout과 글자 단위로 어긋나도, 가리키는 값이 같으면 정답으로 본다.
+    오탐을 막기 위해 숫자 일치는 stdout이 '순수 숫자'일 때만 인정한다."""
+    a, e = actual.strip(), expected.strip()
+    if a == e:
+        return True
+
+    def _unquote(s):
+        return s[1:-1] if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"" else s
+    if _unquote(a) == _unquote(e):
+        return True
+
+    na, ne = _to_number(a), _to_number(e)
+    if na is not None and ne is not None and na == ne and _CLEAN_NUM_RE.fullmatch(a.replace(" ", "")):
+        return True
+    return False
+
+
+def _build_verification_program(snippet: str, code: str) -> str:
+    """실행할 파이썬 소스를 만든다.
+
+    code가 있으면 원본 프로그램의 함수·전역을 먼저 정의(그 자체 출력은 억제)한 뒤
+    스니펫을 같은 전역에서 실행한다. 스니펫이 원본 함수(calculate_stock 등)나 전역을
+    재정의 없이 참조해도 NameError가 나지 않게 하는 게 핵심.
+    스니펫이 자족적이면(필요한 정의 포함) 재정의가 우선하므로 무해하다."""
+    if not code.strip():
+        return snippet
+    return (
+        "import io as _vc_io, contextlib as _vc_ctx\n"
+        f"_vc_code = {code!r}\n"
+        "_vc_ns = {'__name__': '__main__'}\n"
+        "try:\n"
+        "    with _vc_ctx.redirect_stdout(_vc_io.StringIO()):\n"
+        "        exec(compile(_vc_code, '<code>', 'exec'), _vc_ns)\n"
+        "except Exception:\n"
+        "    pass  # 원본 실행 실패해도 정의된 함수/전역만 있으면 스니펫이 살 수 있다\n"
+        "globals().update({_vc_k: _vc_v for _vc_k, _vc_v in _vc_ns.items() "
+        "if not _vc_k.startswith('__')})\n"
+        "# ---- verification snippet ----\n"
+        f"{snippet}\n"
+    )
+
+
+def _run_verification_snippet(snippet: str, code: str = "") -> str:
     """
     verification_snippet을 임시 .py 파일로 저장해 별도 subprocess로 실행한다.
+    code가 주어지면 원본 프로그램의 정의를 먼저 주입한다(_build_verification_program).
     타임아웃 VERIFY_TIMEOUT_SEC초, stdout.strip() 반환. 실패/타임아웃은 raise.
     (subprocess.run이 타임아웃 시 자식을 종료한 뒤 TimeoutExpired를 올린다.)
     """
+    program = _build_verification_program(snippet, code)
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, encoding="utf-8"
     )
     try:
-        tmp.write(snippet)
+        tmp.write(program)
         tmp.close()
         result = subprocess.run(
             [sys.executable, tmp.name],
@@ -276,10 +339,11 @@ def _run_verification_snippet(snippet: str) -> str:
     return (result.stdout or "").strip()
 
 
-def _verify_one(q: dict) -> tuple:
+def _verify_one(q: dict, code: str = "") -> tuple:
     """
     단일 computational 문항 실행 검증. (ok: bool, detail: str) 반환.
     conceptual·빈 스니펫은 ok=True. ★ 정답을 실행값으로 덮어쓰지 않는다.
+    code: 원본 프로그램. 스니펫이 그 함수·전역을 참조할 수 있도록 주입한다.
     """
     if q.get("answer_type") != "computational":
         return (True, "skip (conceptual)")
@@ -290,12 +354,12 @@ def _verify_one(q: dict) -> tuple:
     ans_option = next((o for o in q.get("options", []) if o.strip().startswith(ans_label)), "")
     expected = _option_value(ans_option, ans_label)
     try:
-        actual = _run_verification_snippet(snippet)
+        actual = _run_verification_snippet(snippet, code)
     except subprocess.TimeoutExpired:
         return (False, f"타임아웃 ({VERIFY_TIMEOUT_SEC}s)")
     except Exception as e:
         return (False, f"실행 오류 — {e}")
-    if actual != expected:
+    if not _values_match(actual, expected):
         return (False, f"불일치 stdout={actual!r}, 정답 보기={expected!r}")
     return (True, f"일치 {actual!r}")
 
@@ -309,6 +373,61 @@ def _parse_single_problem(raw: str, expected_ct_skill: str = None) -> dict:
     return q
 
 
+def _regenerate_question(ct_skill: str, code: str, templates: str, log_label: str = "") -> dict | None:
+    """지정 CT 유형 문항 1개를 단일 생성·검증한다. 최대 VERIFY_RETRY_LIMIT회 시도.
+    검증 통과 문항을 반환하고, 전부 실패하면 None. (검증 실패 문항 재생성·유형 보충 공용)"""
+    tag = f"{log_label}{ct_skill}"
+    for attempt in range(VERIFY_RETRY_LIMIT):
+        raw = None
+        try:
+            raw = llm.call_single_problem_gen(code, ct_skill, templates)
+            new_q = _parse_single_problem(raw, expected_ct_skill=ct_skill)
+        except Exception as e:
+            print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 파싱 실패 — {e}")
+            # 파싱 실패 시 원본 LLM 응답을 통째로 로그로 남긴다 (원인 추적용).
+            if raw is not None:
+                print(f"[regen {tag}] 원본 응답 ↓↓↓\n{raw}\n[regen {tag}] 원본 응답 ↑↑↑")
+            continue
+        ok, detail = _verify_one(new_q, code)
+        if ok:
+            print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 성공 — {detail}")
+            return new_q
+        print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 검증 실패 — {detail}")
+    return None
+
+
+def _reconcile_skills(questions: list, code: str, templates: str) -> list:
+    """문항들을 기대 CT 유형 구성·순서(PROBLEM_CT_SKILLS: 분해→통합, 각 1개)에 맞춘다.
+
+    모델이 한 유형을 중복하거나 누락해도(예: 통합 누락·패턴인식 중복) 세트를 버리지 않고:
+      - 각 기대 유형에 해당하는 첫 문항을 순서대로 배치(잉여 중복은 버림)
+      - 누락된 유형은 단일 생성으로 보충
+    이 함수가 'ct_skill 순서 오류' 503의 근본 해결책이다."""
+    by_skill = {}
+    for q in questions:
+        by_skill.setdefault(q.get("ct_skill"), []).append(q)
+
+    present = tuple(q.get("ct_skill") for q in questions)
+    if present != PROBLEM_CT_SKILLS:
+        print(f"[reconcile] ct_skill 구성 보정 — 현재 {present} → 기대 {PROBLEM_CT_SKILLS}")
+
+    result = []
+    for skill in PROBLEM_CT_SKILLS:
+        bucket = by_skill.get(skill)
+        if bucket:
+            q = bucket.pop(0)
+            q["ct_skill"] = skill   # 라벨 정규화
+            result.append(q)
+        else:
+            print(f"[reconcile] '{skill}' 유형 누락 — 단일 생성으로 보충")
+            gen = _regenerate_question(skill, code, templates, log_label="reconcile ")
+            if gen is not None:
+                result.append(gen)
+            else:
+                print(f"[reconcile] '{skill}' 보충 실패 → 해당 유형 제외")
+    return result
+
+
 def _process_questions(questions: list, code: str, templates: str) -> list:
     """
     spec §3.4 — 검증 실패한 computational 문항만 최대 VERIFY_RETRY_LIMIT회 재생성.
@@ -317,33 +436,14 @@ def _process_questions(questions: list, code: str, templates: str) -> list:
     """
     out = []
     for i, q in enumerate(questions):
-        ok, detail = _verify_one(q)
+        ok, detail = _verify_one(q, code)
         if ok:
             out.append(q)
             continue
 
         ct_skill = q.get("ct_skill", "")
         print(f"[verify q{i} {ct_skill}] 초기 실패 — {detail}")
-
-        replaced = None
-        for attempt in range(VERIFY_RETRY_LIMIT):
-            raw = None
-            try:
-                raw = llm.call_single_problem_gen(code, ct_skill, templates)
-                new_q = _parse_single_problem(raw, expected_ct_skill=ct_skill)
-            except Exception as e:
-                print(f"[regen q{i} {ct_skill}] {attempt+1}/{VERIFY_RETRY_LIMIT} 파싱 실패 — {e}")
-                # 파싱 실패 시 원본 LLM 응답을 통째로 로그로 남긴다 (원인 추적용).
-                if raw is not None:
-                    print(f"[regen q{i} {ct_skill}] 원본 응답 ↓↓↓\n{raw}\n[regen q{i} {ct_skill}] 원본 응답 ↑↑↑")
-                continue
-            ok2, detail2 = _verify_one(new_q)
-            if ok2:
-                print(f"[regen q{i} {ct_skill}] {attempt+1}/{VERIFY_RETRY_LIMIT} 성공 — {detail2}")
-                replaced = new_q
-                break
-            print(f"[regen q{i} {ct_skill}] {attempt+1}/{VERIFY_RETRY_LIMIT} 검증 실패 — {detail2}")
-
+        replaced = _regenerate_question(ct_skill, code, templates, log_label=f"q{i} ")
         if replaced is not None:
             out.append(replaced)
         else:
@@ -461,8 +561,9 @@ def generate_problem():
     if parsed is None:
         return jsonify({"error": str(last_error)}), 503
 
-    # 문항별 검증 + 실패시 단일 문항 재생성/스킵
-    final_questions = _process_questions(parsed["questions"], code, templates)
+    # CT 유형 구성 보정(중복/누락 보충) → 문항별 검증 + 실패시 단일 문항 재생성/스킵
+    reconciled = _reconcile_skills(parsed["questions"], code, templates)
+    final_questions = _process_questions(reconciled, code, templates)
     _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
     return jsonify({
         "title":     parsed["title"],
@@ -515,8 +616,9 @@ def session_start():
     if parsed is None:
         return jsonify({"error": f"문제 생성 실패: {last_error}"}), 503
 
-    # 문항별 검증 + 실패시 단일 문항 재생성/스킵
-    final_questions = _process_questions(parsed["questions"], code, templates)
+    # CT 유형 구성 보정(중복/누락 보충) → 문항별 검증 + 실패시 단일 문항 재생성/스킵
+    reconciled = _reconcile_skills(parsed["questions"], code, templates)
+    final_questions = _process_questions(reconciled, code, templates)
     session_id = _gen_session_id()
     _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
     return jsonify({
@@ -598,6 +700,17 @@ def chat():
     def generate():
         # <think>...</think> 추론 토큰을 학생 화면에 내보내지 않도록 스트림에서 제거
         think_filter = llm.ThinkStreamFilter()
+        started = [False]   # 첫 비공백 전까지의 선행 공백(주로 think 제거 후 남는 빈 줄)은 버린다
+
+        def emit(text):
+            if not started[0]:
+                text = text.lstrip()   # 답변 머리의 빈 줄·공백 제거 → 빈칸 방지
+                if not text:
+                    return None
+                started[0] = True
+            visible_parts.append(text)
+            return f"data: {json.dumps({'delta': text})}\n\n"
+
         try:
             stream = llm.stream_chatbot(messages)
             for chunk in stream:
@@ -606,19 +719,21 @@ def chat():
                     continue
                 visible = think_filter.feed(delta)
                 if visible:
-                    visible_parts.append(visible)
-                    yield f"data: {json.dumps({'delta': visible})}\n\n"
+                    msg = emit(visible)
+                    if msg:
+                        yield msg
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
 
         tail = think_filter.flush()
         if tail:
-            visible_parts.append(tail)
-            yield f"data: {json.dumps({'delta': tail})}\n\n"
+            msg = emit(tail)
+            if msg:
+                yield msg
 
-        # 저장·재전송 모두 think 제거된 본문으로 통일 (로그·후속 맥락 오염 방지)
-        full_reply = "".join(visible_parts)
+        # 저장·재전송 모두 think 제거·양끝 공백 정리된 본문으로 통일 (로그·후속 맥락 오염 방지)
+        full_reply = "".join(visible_parts).strip()
         save_turn(session_id, user_message_for_log, full_reply, code_context)
         yield f"data: {json.dumps({'done': True})}\n\n"
 
