@@ -43,17 +43,37 @@ SYSTEM_CODE = (
 )
 
 SYSTEM_PROBLEM = (
-    "You are a coding tutor. Create exactly ONE multiple-choice question in Korean "
-    "based on the given Python code.\n"
-    "Output ONLY valid JSON — no markdown fences, no other text:\n"
-    '{"question": "문제 본문", '
-    '"options": ["A. 보기1", "B. 보기2", "C. 보기3", "D. 보기4"], '
-    '"answer": "B", '
-    '"explanation": "정답 해설 1~2문장", '
-    '"ct_skill": "CT요소명", '
-    '"difficulty": "난이도명"}\n'
-    "Rules: exactly 4 options labeled A/B/C/D, answer is one capital letter, "
-    "wrong options are plausible but clearly incorrect, vary correct answer position."
+    "아래 파이썬 코드를 읽고 코드의 제목·한 줄 요약과 4지선다 MCQ 5문항을 한 번에 만든다.\n"
+    "출력은 지정한 JSON 객체 1개만(코드블록 기호·설명 문장 금지).\n\n"
+    "규칙:\n"
+    "1. title: 코드 전체를 가리키는 짧은 한국어 제목.\n"
+    "2. summary: 이 코드가 무엇을 하는지 한 줄로 요약한 한국어 문장.\n"
+    "3. 5문항의 ct_skill은 순서대로 분해, 패턴인식, 추상화, 알고리즘적사고, 통합. 각 정확히 1문항.\n"
+    "4. 각 문항은 주어진 코드를 읽으면 풀 수 있어야 한다.\n"
+    "5. 각 문항 보기는 정확히 4개(A/B/C/D), 정답은 그 중 1개. 오답 보기도 그럴듯하게.\n"
+    "6. 정답 라벨이 한 자리에 쏠리지 않게 5문항에 걸쳐 다양하게 분포시킨다.\n"
+    "7. 각 문항에 answer_type을 분류해 넣는다:\n"
+    "   - 'computational': 코드를 실행하면 값이 하나로 정해지는 문항(출력값, n번 반복 후 변수값, 함수 반환값 등).\n"
+    "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻는 문항.\n"
+    "   강제는 아니지만 보통 알고리즘적사고(가끔 패턴인식)가 computational, 분해·추상화·통합은 conceptual이 자연스럽다.\n"
+    "8. 각 문항의 verification_snippet:\n"
+    "   - answer_type이 'computational'이면: 정답 값을 구하는 자족(self-contained) 파이썬 코드를 적는다. "
+    "필요한 함수 정의를 모두 그 안에 포함하고, 정답 값 하나만 print 한다. "
+    "input()·파일·네트워크·무한루프 금지. "
+    "출력 형식을 보기의 값 부분과 정확히 맞춘다 (예: 보기 'B. 22000' → print 결과는 '22000').\n"
+    "   - answer_type이 'conceptual'이면: 빈 문자열 \"\".\n"
+    "9. 각 문항에 focus_points(1~3개의 한국어 문자열 배열)를 넣는다. "
+    "정답을 그대로 적지 말고 학생이 풀이를 떠올리는 '생각의 단서'(예: 살펴봐야 할 코드 영역, 추적할 변수, 호출 흐름)로 적는다.\n\n"
+    'JSON 형식:\n'
+    '{"title": "프로그램 제목",\n'
+    ' "summary": "이 프로그램이 하는 일 한 줄",\n'
+    ' "questions": [\n'
+    '  {"ct_skill": "분해", "question": "...", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], "answer": "B", "answer_type": "conceptual", "verification_snippet": "", "explanation": "정답 해설 1~2문장", "focus_points": ["살펴볼 단서 1", "살펴볼 단서 2"]},\n'
+    '  {"ct_skill": "패턴인식", ...},\n'
+    '  {"ct_skill": "추상화", ...},\n'
+    '  {"ct_skill": "알고리즘적사고", "...", "answer_type": "computational", "verification_snippet": "def calc(...):\\n    ...\\nprint(calc(...))", ...},\n'
+    '  {"ct_skill": "통합", ...}\n'
+    ']}'
 )
 
 SYSTEM_CT_ANALYSIS = (
@@ -143,28 +163,44 @@ def call_code_gen(topic: str = "", ctx: str = "", difficulty: str = "") -> str:
     )
 
 
-def call_problem_gen(
-    code: str,
-    ct_skill: str,
-    difficulty: str,
-    templates: str,
-    previous_problems: list,
-    problem_index: int = 0,
-) -> str:
-    """CT 요소 기반 4지선다 객관식 문제 생성. JSON 반환."""
-    ctx_block = f"\n\n[참고 템플릿]\n{templates}" if templates else ""
-    prev_text = (
-        "\n\n[이미 출제된 문제 - 중복 금지]\n"
-        + "\n".join(f"- {p}" for p in previous_problems)
-    ) if previous_problems else ""
-    user_content = (
-        f"/no_think [CT 요소: {ct_skill}]\n"
-        f"[난이도: {difficulty}] (총 5문제 중 {problem_index + 1}번째)"
-        f"{ctx_block}{prev_text}\n\n"
-        f"[파이썬 코드]\n{code}"
-    )
+def call_problem_gen(code: str, templates: str = "", difficulty: str = "") -> str:
+    """Stage 2 — 한 번 호출로 MCQ 5문항 일괄 생성 (code_reading_generation.md §3)."""
+    system = SYSTEM_PROBLEM
+    if templates:
+        system += f"\n\n[유형별 출제 가이드]\n{templates}"
+    user_content = f"난이도: {difficulty}\n[파이썬 코드]\n{code}"
     return _generate(
-        [{"role": "system", "content": SYSTEM_PROBLEM},
+        [{"role": "system", "content": system},
+         {"role": "user",   "content": user_content}],
+        TEMP_CREATIVE,
+        max_tokens=4096,
+    )
+
+
+SYSTEM_SINGLE_PROBLEM = (
+    "주어진 파이썬 코드에 대해 지정된 CT 요소 한 가지에 맞는 4지선다 MCQ 1문항을 만든다.\n"
+    "출력은 JSON 객체 1개만 (코드블록 기호·설명 문장 금지).\n\n"
+    "규칙:\n"
+    "1. 보기 정확히 4개(A/B/C/D), 정답 1개. 오답도 그럴듯하게.\n"
+    "2. answer_type 분류:\n"
+    "   - 'computational': 코드를 실행하면 값이 하나로 정해지는 문항. verification_snippet은 정답 값 하나만 print하는 자족 실행 코드, input()·파일·네트워크 금지.\n"
+    "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻는 문항. verification_snippet은 \"\".\n"
+    "3. computational이면 보기의 값 형식과 verification_snippet의 print 출력을 정확히 일치시킨다.\n"
+    "4. focus_points: 1~3개의 한국어 문자열 배열. 정답을 그대로 적지 말고 학생이 풀이를 떠올리는 '생각의 단서'로 적는다.\n\n"
+    'JSON 형식:\n'
+    '{"ct_skill": "지정된 CT 요소", "question": "...", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], '
+    '"answer": "B", "answer_type": "computational", "verification_snippet": "...", "explanation": "정답 해설 1~2문장", "focus_points": ["...", "..."]}'
+)
+
+
+def call_single_problem_gen(code: str, ct_skill: str, templates: str = "") -> str:
+    """단일 문항 재생성 (검증 실패한 computational 문항용)."""
+    system = SYSTEM_SINGLE_PROBLEM
+    if templates:
+        system += f"\n\n[유형별 출제 가이드]\n{templates}"
+    user_content = f"CT 요소: {ct_skill}\n[파이썬 코드]\n{code}"
+    return _generate(
+        [{"role": "system", "content": system},
          {"role": "user",   "content": user_content}],
         TEMP_CREATIVE,
         max_tokens=1024,

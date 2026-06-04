@@ -1,9 +1,9 @@
 const chatHistory = [];
 const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 let currentCode = null;
-let currentProblemData = null;   // 현재 MCQ 객체 {question, options, answer, explanation, ct_skill}
+let allProblems = [];            // 코드 생성 직후 한 번에 받아 캐시된 5문항
+let currentProblemData = null;   // 현재 표시 중인 MCQ 객체
 let currentProblemIndex = 0;
-let previousProblems = [];       // 문제 본문 문자열 배열 (중복 방지 + 평가용)
 let submittedAnswers = [];       // 학생 선택 라벨 배열 (A/B/C/D)
 let selectedOption = null;       // 현재 선택된 라벨
 let currentTopic = "";
@@ -48,7 +48,7 @@ async function generateCode() {
     const answerArea = document.getElementById("answer-area");
 
     currentProblemIndex = 0;
-    previousProblems = [];
+    allProblems = [];
     submittedAnswers = [];
     currentProblemData = null;
     selectedOption = null;
@@ -79,12 +79,28 @@ async function generateCode() {
         currentCode = data.code;
         currentTopic = data.topic || "";
 
-        setOverlay(true, `문제 1 / ${TOTAL_PROBLEMS} 만드는 중...`);
-        await generateNextProblem();
+        setOverlay(true, `문제 ${TOTAL_PROBLEMS}개 만드는 중...`);
+        await loadAllProblems();
+        showCurrentProblem();
     } catch (e) {
         codeBlock.innerHTML = `<code style="color:#e53e3e">오류: ${e.message}</code>`;
     } finally {
         setOverlay(false);
+    }
+}
+
+async function loadAllProblems() {
+    const res = await fetch("/api/generate-problem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: currentCode }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    allProblems = data.questions || [];
+    // 검증 실패로 스킵된 문항이 있을 수 있으므로 최소 1개만 보장
+    if (allProblems.length === 0) {
+        throw new Error("생성된 문제가 없습니다.");
     }
 }
 
@@ -110,7 +126,7 @@ function selectOption(label) {
     document.getElementById("submit-btn").disabled = false;
 }
 
-async function generateNextProblem() {
+function showCurrentProblem() {
     const problemDisplay = document.getElementById("problem-display");
     const answerArea = document.getElementById("answer-area");
 
@@ -118,58 +134,32 @@ async function generateNextProblem() {
     awaitingFor = null;
     hideHintButton();
 
-    try {
-        const res = await fetch("/api/generate-problem", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                code: currentCode,
-                problem_index: currentProblemIndex,
-                previous_problems: previousProblems,
-            }),
-        });
-        const data = await res.json();
-
-        if (data.error) {
-            problemDisplay.className = "text-display";
-            problemDisplay.style.color = "#e53e3e";
-            problemDisplay.textContent = `오류: ${data.error}`;
-            return;
-        }
-
-        currentProblemData = data;
-        const question = (data.question || "").trim();
-        if (!question) {
-            problemDisplay.className = "text-display";
-            problemDisplay.style.color = "#e53e3e";
-            problemDisplay.textContent = "문제를 생성하지 못했습니다.";
-            return;
-        }
-
-        previousProblems.push(question);
-        selectedOption = null;
-
-        const ctSkill = data.ct_skill || "";
-        document.getElementById("problem-count").textContent =
-            `${currentProblemIndex + 1} / ${TOTAL_PROBLEMS}`;
-        problemDisplay.className = "text-display";
-        problemDisplay.style.color = "";
-        problemDisplay.innerHTML =
-            `${ctSkill ? `<div class="ct-skill-badge">${escapeHtml(ctSkill)}</div>` : ""}` +
-            `<div class="problem-item">${escapeHtml(question)}</div>`;
-
-        renderOptions(data.options);
-        document.getElementById("submit-btn").disabled = true;
-        document.getElementById("feedback-area").classList.add("hidden");
-        document.getElementById("answer-submit-row").classList.remove("hidden");
-        answerArea.classList.add("visible");
-        showHintButton();
-    } catch (e) {
-        console.error("[문제생성] 오류:", e);
+    const data = allProblems[currentProblemIndex];
+    if (!data) {
         problemDisplay.className = "text-display";
         problemDisplay.style.color = "#e53e3e";
-        problemDisplay.textContent = `문제 생성 오류: ${e.message}`;
+        problemDisplay.textContent = `문제 ${currentProblemIndex + 1}을(를) 찾을 수 없습니다.`;
+        return;
     }
+
+    currentProblemData = data;
+    selectedOption = null;
+
+    const ctSkill = data.ct_skill || "";
+    document.getElementById("problem-count").textContent =
+        `${currentProblemIndex + 1} / ${allProblems.length}`;
+    problemDisplay.className = "text-display";
+    problemDisplay.style.color = "";
+    problemDisplay.innerHTML =
+        `${ctSkill ? `<div class="ct-skill-badge">${escapeHtml(ctSkill)}</div>` : ""}` +
+        `<div class="problem-item">${escapeHtml(data.question || "")}</div>`;
+
+    renderOptions(data.options);
+    document.getElementById("submit-btn").disabled = true;
+    document.getElementById("feedback-area").classList.add("hidden");
+    document.getElementById("answer-submit-row").classList.remove("hidden");
+    answerArea.classList.add("visible");
+    showHintButton();
 }
 
 function submitAnswer() {
@@ -212,7 +202,7 @@ function submitAnswer() {
 async function nextProblem() {
     currentProblemIndex++;
 
-    if (currentProblemIndex >= TOTAL_PROBLEMS) {
+    if (currentProblemIndex >= allProblems.length) {
         const problemDisplay = document.getElementById("problem-display");
         const answerArea = document.getElementById("answer-area");
         document.getElementById("problem-count").textContent = "완료";
@@ -223,12 +213,7 @@ async function nextProblem() {
         return;
     }
 
-    setOverlay(true, `문제 ${currentProblemIndex + 1} / ${TOTAL_PROBLEMS} 만드는 중...`);
-    try {
-        await generateNextProblem();
-    } finally {
-        setOverlay(false);
-    }
+    showCurrentProblem();
 }
 
 async function triggerEvaluation() {
@@ -241,7 +226,7 @@ async function triggerEvaluation() {
                 session_id: sessionId,
                 topic: currentTopic,
                 code: currentCode,
-                problems: previousProblems,
+                problems: allProblems.map(p => p.question),
                 answers: submittedAnswers,
                 chat_history: chatHistory,
             }),
