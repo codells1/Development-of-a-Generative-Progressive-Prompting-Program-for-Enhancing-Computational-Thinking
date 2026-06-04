@@ -32,10 +32,20 @@ CODE_TOPIC_HINTS = (
     "예산·가계부 요약",
 )
 
-# CT 평가 루브릭 지표 (prompts/ct_evaluation_rubric.md). 1~3점 또는 N/A로 평정.
-# ⑦ 자기해결은 CT 총점과 분리 집계하므로 이 튜플에 넣지 않는다.
-CT_SKILLS = ("문제분해", "용어사용", "추상화", "실행흐름", "자료표현", "동작파악", "패턴인식")
-SELF_REG_SKILL = "자기해결"   # 메타인지/자기조절 — CT 총점과 분리
+# 코드·문제 난이도를 한 수준으로 통일한다 (클라이언트 입력과 무관하게 서버에서 고정).
+TARGET_DIFFICULTY = "중학교 3학년~고등학교 1학년"
+
+# CT 평가 7요소 (prompts/ct_evaluation_rubric.md). 하나의 그룹 — 패턴인식 제외, 자기해결 포함.
+# (id, LLM JSON 키, 화면 표시명). 순서 = 화면 표시 순서. 숫자 총점은 만들지 않는다(학생 비노출).
+CT_ELEMENTS = (
+    ("decomposition",          "문제분해", "문제 분해"),
+    ("terminology",            "용어사용", "용어 사용"),
+    ("abstraction",            "추상화",   "추상화"),
+    ("control_flow",           "실행흐름", "실행 흐름"),
+    ("data_representation",    "자료표현", "자료 표현"),
+    ("behavior_comprehension", "동작파악", "동작 파악"),
+    ("self_resolution",        "자기해결", "자기 해결"),
+)
 
 # 문제 출제용 5유형 (분석용 CT 루브릭 지표와 별개). 순서 고정 — 분해→통합.
 PROBLEM_CT_SKILLS = ("분해", "패턴인식", "추상화", "알고리즘적사고", "통합")
@@ -119,40 +129,41 @@ def _norm_rubric_score(value):
     return max(1, min(3, iv))
 
 
+_NUM_TO_GRADE = {3: "상", 2: "중", 1: "하"}
+NARRATIVE_CHAR_LIMIT = 240   # 서술 피드백 상한(공백 포함). 사양 권장 150~220 + 약간의 여유.
+
+
+def _clamp_narrative(text: str) -> str:
+    """서술 피드백을 박스 규격에 맞춰 상한 강제. 넘치면 마지막 문장 경계에서 자른다."""
+    t = (text or "").strip()
+    if len(t) <= NARRATIVE_CHAR_LIMIT:
+        return t
+    cut = t[:NARRATIVE_CHAR_LIMIT]
+    end = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+    if end >= 80:                       # 의미 있는 분량이 남으면 문장 끝에서 자른다
+        return cut[:end + 1].strip()
+    return cut.rstrip() + "…"
+
+
 def score_ct(ct_raw: dict) -> dict:
     """
-    루브릭 원시 채점 결과(ct_raw)를 정규화·집계한다.
-    - 각 CT 지표: 1~3 또는 None(N/A). N/A는 평균에서 제외.
-    - 자기해결: CT 총점과 분리 집계.
-    - ct_score: N/A 제외 CT 지표 평균을 0~100으로 환산(3점=100). 측정값 없으면 0.
-    - weak_ct: LLM 산출값이 유효(채점된 CT 지표)하면 그대로, 아니면 최솟값 지표.
+    루브릭 원시 채점 결과(ct_raw)를 7요소 상/중/하/NA + 서술 피드백으로 정리한다.
+    - 숫자 총점은 만들지 않는다(학생 화면 비노출 사양).
+    - 각 요소 grade ∈ "상"|"중"|"하"|"NA". elements 순서 = 화면 표시 순서(7개 고정).
     LLM 비의존 — 순수 함수라 단독 검증 가능.
     """
-    ct_scores = {k: _norm_rubric_score(ct_raw.get(k)) for k in CT_SKILLS}
-    graded = {k: v for k, v in ct_scores.items() if v is not None}
-    self_reg = _norm_rubric_score(ct_raw.get(SELF_REG_SKILL))
-
-    if graded:
-        avg = sum(graded.values()) / len(graded)
-        ct_score = round(avg / 3 * 100)
-    else:
-        ct_score = 0
-
-    weak_ct = ct_raw.get("weak_ct", "")
-    if weak_ct not in graded:
-        weak_ct = min(graded, key=graded.get) if graded else ""
-
+    elements = []
+    for el_id, key, name in CT_ELEMENTS:
+        n = _norm_rubric_score(ct_raw.get(key))
+        elements.append({"id": el_id, "name": name, "grade": _NUM_TO_GRADE.get(n, "NA")})
     return {
-        "ct_scores":   ct_scores,    # 값은 1~3 또는 None(=N/A)
-        "self_reg":    self_reg,     # 1~3 또는 None
-        "ct_score":    ct_score,     # 0~100
-        "weak_ct":     weak_ct,
-        "feedback":    (ct_raw.get("feedback") or "").strip(),
+        "elements":           elements,
+        "narrative_feedback": _clamp_narrative(ct_raw.get("feedback") or ""),
     }
 
 
 def save_feedback(session_id: str, topic: str, scored: dict) -> None:
-    """정규화된 CT 채점 결과(score_ct 반환값)를 feedback.json에 누적 저장한다."""
+    """CT 채점 결과(score_ct 반환값)를 feedback.json에 누적 저장한다(교사·연구용 내부 기록)."""
     try:
         records = []
         if os.path.exists(FEEDBACK_FILE):
@@ -160,19 +171,13 @@ def save_feedback(session_id: str, topic: str, scored: dict) -> None:
                 records = json.load(f)
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # JSON 저장 시 None은 "N/A" 문자열로 직렬화해 가독성 유지
-        ct_scores = {k: (v if v is not None else "N/A")
-                     for k, v in scored.get("ct_scores", {}).items()}
-        self_reg = scored.get("self_reg")
+        grades = {e["name"]: e["grade"] for e in scored.get("elements", [])}
         records.append({
-            "session_id":  session_id,
-            "timestamp":   now,
-            "topic":       topic,
-            "ct_scores":   ct_scores,
-            "self_reg":    self_reg if self_reg is not None else "N/A",
-            "ct_score":    scored.get("ct_score", 0),
-            "weak_ct":     scored.get("weak_ct", ""),
-            "ct_feedback": scored.get("feedback", ""),
+            "session_id":         session_id,
+            "timestamp":          now,
+            "topic":              topic,
+            "grades":             grades,
+            "narrative_feedback": scored.get("narrative_feedback", ""),
         })
 
         with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
@@ -516,22 +521,13 @@ def _get_stored_question(session_id: str, index) -> dict | None:
     return None
 
 
-@api.route("/status", methods=["GET"])
-def status():
-    try:
-        models = llm._client.models.list()
-        return jsonify({"connected": True, "models": [m.id for m in models.data]})
-    except Exception:
-        return jsonify({"connected": False, "models": []})
-
-
 @api.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.get_json(silent=True) or {}
     topic = (data.get("topic_hint") or "").strip() or random.choice(CODE_TOPIC_HINTS)
     ctx = rag_store.retrieve("code_examples", topic)
     try:
-        raw = llm.call_code_gen(topic=topic, ctx=ctx)
+        raw = llm.call_code_gen(topic=topic, ctx=ctx, difficulty=TARGET_DIFFICULTY)
     except Exception as e:
         return jsonify({"error": str(e)}), 503
 
@@ -545,7 +541,7 @@ def generate_problem():
     code = data.get("code", "")
     if not code:
         return jsonify({"error": "code 필드 필요"}), 400
-    difficulty = (data.get("difficulty") or "").strip()
+    difficulty = TARGET_DIFFICULTY   # 난이도 통일 (클라이언트 입력 무시)
     session_id = (data.get("session_id") or "").strip()
 
     # 5유형별로 RAG 가이드를 따로 검색해 합친다 (한 쿼리에 5유형 섞으면 편향됨)
@@ -592,7 +588,7 @@ def session_start():
     응답 스키마는 code_reading_generation.md §4 (학생 전송용 — 내부 전용 필드 제외).
     """
     data = request.get_json(silent=True) or {}
-    difficulty = (data.get("difficulty") or "").strip()
+    difficulty = TARGET_DIFFICULTY   # 난이도 통일 (클라이언트 입력 무시)
     topic_hint = (data.get("topic_hint") or "").strip() or random.choice(CODE_TOPIC_HINTS)
 
     # Stage 1 — 단일 완결 코드 생성
@@ -751,6 +747,50 @@ def chat():
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
 
+@api.route("/hint-followup", methods=["POST"])
+def hint_followup():
+    """힌트 후 학생 발화 판정.
+      - on_track=True  : 학생 생각이 정답 방향에 맞음 → 추가 응답 없음(대화 종료).
+      - on_track=False : 오해·오답 → 스스로 바로잡도록 돕는 유도 질문 1개를 reply로.
+    정답·해설·핵심 단서는 서버 보관 세트에서만 가져와 판단 기준으로만 쓰고 노출하지 않는다.
+    """
+    data = request.get_json() or {}
+    session_id      = data.get("session_id", "unknown")
+    problem_index   = data.get("problem_index")
+    code            = data.get("code_context") or ""
+    current_problem = data.get("current_problem") or ""
+    history         = data.get("messages", [])
+
+    answer = explanation = ""
+    focus_points = None
+    stored_q = _get_stored_question(session_id, problem_index)
+    if stored_q:
+        answer       = stored_q.get("answer", "")
+        explanation  = stored_q.get("explanation", "")
+        focus_points = stored_q.get("focus_points")
+
+    tail = history[-6:]
+    transcript = "\n".join(
+        f"{'학생' if m.get('role') == 'user' else 'AI'}: {(m.get('content') or '').strip()}"
+        for m in tail if (m.get('content') or '').strip()
+    )
+
+    try:
+        raw = llm.call_hint_followup(code, current_problem, answer, explanation,
+                                     focus_points, transcript)
+        parsed = _extract_json(raw)
+        on_track = bool(parsed.get("on_track"))
+        reply = "" if on_track else (parsed.get("reply") or "").strip()
+
+        last_user = next((m.get("content", "") for m in reversed(history)
+                          if m.get("role") == "user"), "")
+        save_turn(session_id, last_user,
+                  reply if reply else "[on_track — 추가 응답 없음]", code)
+        return jsonify({"on_track": on_track, "reply": reply})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
+
+
 @api.route("/evaluate", methods=["POST"])
 def evaluate():
     data = request.get_json()
@@ -790,19 +830,14 @@ def evaluate():
     try:
         ct_raw = _extract_json(llm.call_log_analysis(log_text))
 
-        # 루브릭(prompts/ct_evaluation_rubric.md) 1~3·N/A 채점 → 정규화·집계
+        # 루브릭(prompts/ct_evaluation_rubric.md) 7요소 상/중/하/NA + 서술 피드백
         scored = score_ct(ct_raw)
         save_feedback(session_id, topic, scored)
 
-        # 프론트는 ct_score(0~100)와 ct_feedback만 사용. 지표 상세는 N/A→"N/A"로 직렬화.
-        ct_scores_out = {k: (v if v is not None else "N/A")
-                         for k, v in scored["ct_scores"].items()}
+        # 학생 화면: 숫자 총점 없이 7요소 배지(elements) + 서술 피드백만 내려보낸다.
         return jsonify({
-            "ct_scores":   ct_scores_out,
-            "self_reg":    scored["self_reg"] if scored["self_reg"] is not None else "N/A",
-            "weak_ct":     scored["weak_ct"],
-            "ct_score":    scored["ct_score"],
-            "ct_feedback": scored["feedback"],
+            "elements":           scored["elements"],
+            "narrative_feedback": scored["narrative_feedback"],
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 503

@@ -51,7 +51,10 @@ SYSTEM_CHAT = (
 )
 
 SYSTEM_CODE = (
-    "너는 중·고등학생의 '코드 읽기' 학습용 파이썬 예제를 만드는 출제자다.\n"
+    "너는 '코드 읽기' 학습용 파이썬 예제를 만드는 출제자다.\n"
+    "대상 수준: 중학교 3학년~고등학교 1학년. 이 수준에 맞춰 일관되게 만든다 "
+    "(리스트·딕셔너리·문자열, for/while 반복, if 조건, 간단한 함수 정의·호출, 기본 산술까지만 사용. "
+    "클래스·재귀·예외처리·컴프리헨션·람다·외부 라이브러리 등 고급 문법은 쓰지 않는다).\n"
     "규칙:\n"
     "1. 외부 입력 없이 그대로 실행되는 단일 완결 프로그램 1개. 데이터는 코드 안에 고정, input() 금지.\n"
     "2. 길이 최대 20줄(권장 12~18줄), 함수 1~2개. 20줄을 절대 넘기지 마라. "
@@ -65,7 +68,9 @@ SYSTEM_CODE = (
 
 SYSTEM_PROBLEM = (
     "아래 파이썬 코드를 읽고 코드의 제목·한 줄 요약과 4지선다 MCQ 5문항을 한 번에 만든다.\n"
-    "출력은 지정한 JSON 객체 1개만(코드블록 기호·설명 문장 금지).\n\n"
+    "출력은 지정한 JSON 객체 1개만(코드블록 기호·설명 문장 금지).\n"
+    "문항 난이도는 중학교 3학년~고등학교 1학년 수준으로 통일한다 "
+    "(주어진 코드만 읽으면 풀 수 있고, 고급 개념을 요구하지 않는다).\n\n"
     "규칙:\n"
     "1. title: 코드 전체를 가리키는 짧은 한국어 제목.\n"
     "2. summary: 이 코드가 무엇을 하는지 한 줄로 요약한 한국어 문장.\n"
@@ -384,6 +389,71 @@ def call_log_analysis(log_text: str) -> str:
          {"role": "user",   "content": f"/no_think [분석할 학습 기록]\n{log_text}"}],
         TEMP_PRECISE,
         max_tokens=800,   # 상중하 점수 + 서술형 피드백(3~5문장)까지 담을 여유
+    )
+
+
+# ── 힌트 후속 판단 (학생 생각이 정답 방향에 맞는지) ──────────────────
+
+SYSTEM_HINT_FOLLOWUP = (
+    "너는 컴퓨팅 사고력 학습을 돕는 소크라테스식 교육 AI다.\n"
+    "학생이 힌트를 받고 자기 생각을 말했다. 그 생각이 '정답 방향'에 맞는지 판단한다.\n"
+    "- 핵심 개념이 정답 방향과 일치하면(표현이 거칠어도 개념이 맞으면) on_track=true.\n"
+    "- 틀렸거나 오해·혼동이 있거나, 아직 방향을 못 잡았으면 on_track=false.\n\n"
+    "reply 작성 규칙:\n"
+    "- on_track=true이면 reply는 빈 문자열(\"\"). 더 이상 설명·질문하지 않는다(대화 종료).\n"
+    "- on_track=false이면, 정답을 직접 알려주지 말고 학생이 스스로 오해를 바로잡도록 돕는 "
+    "유도 질문 한 개를 reply에 쓴다. 정중한 존댓말(해요체, ~까요?/~요), 2~3문장 이내, "
+    "답변을 따옴표로 감싸지 마라.\n"
+    "정답·정답 라벨·정답 값은 어떤 경우에도 말하지 마라.\n"
+    "출력은 JSON 객체 하나만: {\"on_track\": true 또는 false, \"reply\": \"...\"}"
+)
+
+HINT_FOLLOWUP_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "on_track": {"type": "boolean"},
+        "reply":    {"type": "string"},
+    },
+    "required": ["on_track", "reply"],
+}
+
+HINT_FOLLOWUP_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "hint_followup", "strict": True, "schema": HINT_FOLLOWUP_SCHEMA},
+}
+
+
+def call_hint_followup(code: str, current_problem: str, answer: str, explanation: str,
+                       focus_points, transcript: str) -> str:
+    """힌트 후 학생 발화가 정답 방향에 맞는지 판단. {on_track, reply} JSON 문자열 반환.
+    정답·해설·핵심 단서는 판단 기준으로만 쓰고 학생에게 노출하지 않는다."""
+    system = SYSTEM_HINT_FOLLOWUP
+    if current_problem:
+        system += f"\n\n[현재 문제]\n{current_problem}"
+    if code:
+        system += f"\n\n[코드]\n{code}"
+    secret = ""
+    if answer:
+        secret += f"정답 라벨: {answer}\n"
+    if explanation:
+        secret += f"해설: {explanation}\n"
+    if focus_points:
+        fp = focus_points if isinstance(focus_points, (list, tuple)) else [focus_points]
+        secret += "핵심 단서: " + " / ".join(str(p) for p in fp)
+    if secret:
+        system += ("\n\n[비공개 판단 기준 — 학생에게 절대 노출 금지]\n" + secret)
+    user = (
+        "/no_think [학생과의 최근 대화]\n"
+        f"{transcript}\n\n"
+        "위 마지막 학생 발화의 생각이 정답 방향에 맞는지 판단해 JSON으로만 답하라."
+    )
+    return _generate(
+        [{"role": "system", "content": system},
+         {"role": "user",   "content": user}],
+        TEMP_PRECISE,
+        max_tokens=400,
+        response_format=HINT_FOLLOWUP_RESPONSE_FORMAT,
     )
 
 

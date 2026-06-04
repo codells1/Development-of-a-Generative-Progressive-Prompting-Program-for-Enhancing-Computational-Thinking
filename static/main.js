@@ -1,5 +1,9 @@
 const chatHistory = [];
-const sessionId = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+let sessionId = newSessionId();   // 새 코드(=새 세션)마다 갱신 — 분석 세션 초기화
+
+function newSessionId() {
+    return `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
 let currentCode = null;
 let allProblems = [];            // 코드 생성 직후 한 번에 받아 캐시된 5문항
 let currentProblemData = null;   // 현재 표시 중인 MCQ 객체
@@ -14,7 +18,6 @@ let hintUsed = false;          // 이번 문제에서 힌트 버튼을 눌렀는
 let awaitingFor = null;        // "hint" | "explain" | null — 사용자 답글 대기 중인 트리거 종류
 
 function init() {
-    checkStatus();
     generateCode();
 }
 
@@ -22,24 +25,6 @@ function setOverlay(visible, text = "") {
     const overlay = document.getElementById("loading-overlay");
     document.getElementById("loading-text").textContent = text;
     overlay.classList.toggle("hidden", !visible);
-}
-
-async function checkStatus() {
-    const el = document.getElementById("lm-status");
-    try {
-        const res = await fetch("/api/status");
-        const data = await res.json();
-        if (data.connected) {
-            el.textContent = "● 연결됨";
-            el.style.color = "#38a169";
-        } else {
-            el.textContent = "● 연결 안 됨";
-            el.style.color = "#e53e3e";
-        }
-    } catch {
-        el.textContent = "● 연결 안 됨";
-        el.style.color = "#e53e3e";
-    }
 }
 
 async function generateCode() {
@@ -54,6 +39,13 @@ async function generateCode() {
     selectedOption = null;
     currentTopic = "";
     hideHintButton();
+
+    // 새 코드 = 새 세션. 챗봇 대화·기록과 분석 세션(session_id)을 초기화한다.
+    sessionId = newSessionId();
+    chatHistory.length = 0;
+    awaitingFor = null;
+    hintUsed = false;
+    document.getElementById("chat-messages").innerHTML = "";
 
     setOverlay(true, "코드 만드는 중...");
     codeBlock.innerHTML = "<code></code>";
@@ -269,36 +261,21 @@ async function triggerEvaluation() {
 
 function showEvalResult(data, errorMsg = null) {
     const overlay = document.getElementById("eval-overlay");
-    const topicEl = document.getElementById("eval-topic");
-    topicEl.textContent = currentTopic;
+    document.getElementById("eval-topic").textContent = currentTopic;
 
     if (errorMsg || !data) {
-        document.getElementById("ct-score").textContent = "?";
         document.getElementById("ct-feedback").textContent = errorMsg || "평가 중 오류가 발생했습니다.";
-        document.getElementById("ct-score-ring").className = "score-ring";
         renderRubric(null);
     } else {
-        const ctScore = parseInt(data.ct_score) || 0;
-        document.getElementById("ct-score").textContent = ctScore;
-        document.getElementById("ct-feedback").textContent = data.ct_feedback || "";
-        document.getElementById("ct-score-ring").className = "score-ring " + scoreClass(ctScore);
+        document.getElementById("ct-feedback").textContent = data.narrative_feedback || "";
         renderRubric(data);
     }
 
     document.querySelector(".eval-next-btn").textContent = "새 코드 →";
-
     overlay.classList.remove("hidden");
 }
 
-// 루브릭 지표별(1~3·N/A) 결과를 결과창에 표시. 백엔드 ct_scores/self_reg/weak_ct 사용.
-// 고정 표시 순서(루브릭 순서). JSON 키 정렬 순서에 의존하지 않는다.
-const RUBRIC_ORDER = ["문제분해", "용어사용", "추상화", "실행흐름", "자료표현", "동작파악", "패턴인식"];
-const RUBRIC_LABELS = {
-    문제분해: "문제 분해", 용어사용: "용어 사용", 추상화: "추상화",
-    실행흐름: "실행 흐름", 자료표현: "자료 표현", 동작파악: "동작 파악",
-    패턴인식: "패턴 인식", 자기해결: "자기 해결",
-};
-
+// 7요소 상/중/하/NA 배지를 오른쪽 패널에 순서대로 표시. 백엔드 elements 배열 사용(순서 고정).
 function renderRubric(data) {
     const box = document.getElementById("ct-rubric");
     box.innerHTML = "";
@@ -306,49 +283,31 @@ function renderRubric(data) {
         box.innerHTML = `<p class="rubric-empty">평가 결과를 불러오지 못했습니다.</p>`;
         return;
     }
-    const scores = data.ct_scores || {};
-    const keys = RUBRIC_ORDER.filter(k => k in scores);
-    if (!keys.length) {
-        box.innerHTML = `<p class="rubric-empty">표시할 지표 점수가 없습니다.</p>`;
+    const els = data.elements || [];
+    if (!els.length) {
+        box.innerHTML = `<p class="rubric-empty">표시할 지표가 없습니다.</p>`;
         return;
     }
-
-    keys.forEach((key) => {
-        box.appendChild(rubricRow(RUBRIC_LABELS[key] || key, scores[key], key === data.weak_ct));
-    });
-
-    if (data.self_reg !== undefined && data.self_reg !== null) {
-        const divider = document.createElement("div");
-        divider.className = "rubric-divider";
-        divider.textContent = "메타인지 (CT 총점과 별도 집계)";
-        box.appendChild(divider);
-        box.appendChild(rubricRow(RUBRIC_LABELS["자기해결"], data.self_reg, false));
-    }
+    els.forEach((e) => box.appendChild(rubricRow(e.name, e.grade)));
 }
 
-function rubricRow(label, val, isWeak) {
+function rubricRow(label, grade) {
+    const isNA = !(grade === "상" || grade === "중" || grade === "하");
     const row = document.createElement("div");
-    row.className = "rubric-row" + (isWeak ? " weak" : "");
+    row.className = "rubric-row" + (isNA ? " na-row" : "");
 
     const name = document.createElement("span");
     name.className = "rubric-name";
-    name.textContent = isWeak ? `${label} · 보완 필요` : label;
+    name.textContent = label;
 
-    const GRADE_TEXT = { 1: "하", 2: "중", 3: "상" };
-    const isLevel = (val === 1 || val === 2 || val === 3);
+    const cls = { "상": "g-sang", "중": "g-jung", "하": "g-ha" }[grade] || "g-na";
     const chip = document.createElement("span");
-    chip.className = "rubric-chip " + (isLevel ? "lv" + val : "na");
-    chip.textContent = isLevel ? GRADE_TEXT[val] : "N/A";
+    chip.className = "rubric-chip " + cls;
+    chip.textContent = isNA ? "—" : grade;   // NA는 오류처럼 보이지 않게 흐린 '—'
 
     row.appendChild(name);
     row.appendChild(chip);
     return row;
-}
-
-function scoreClass(score) {
-    if (score >= 80) return "high";
-    if (score >= 60) return "mid";
-    return "low";
 }
 
 function closeEvalAndRestart() {
@@ -436,15 +395,21 @@ async function sendMessage() {
     chatHistory.push({ role: "user", content: message });
 
     // 사용자 답글이 들어왔으니 잠갔던 문제 풀이 섹터 즉시 해제
-    const wasExplain = (awaitingFor === "explain");
+    const mode = awaitingFor;   // "hint" | "explain" | null
     if (awaitingFor === "hint") setAnswerInputEnabled(true);
     else if (awaitingFor === "explain") setNextProblemEnabled(true);
     awaitingFor = null;
 
     // 힌트 없이 정답 → '어떻게 풀었어?'에 대한 학생 답변.
     // 이 답변은 기록만 하고 챗봇은 추가로 응답하지 않는다(대화 종료).
-    if (wasExplain) {
+    if (mode === "explain") {
         input.focus();
+        return;
+    }
+
+    // 힌트에 대한 학생의 생각 → 정답 방향이면 응답 중지, 오해면 한 번 더 유도.
+    if (mode === "hint") {
+        await handleHintFollowup();
         return;
     }
 
@@ -476,6 +441,46 @@ async function sendMessage() {
             bubble.remove();   // 빈 응답이면 빈 말풍선을 남기지 않는다
         }
     } catch (e) {
+        bubble.className = "chat-bubble error";
+        bubble.textContent = `오류: ${e.message}`;
+    } finally {
+        input.disabled = false;
+        input.focus();
+    }
+}
+
+// 힌트 후 학생 발화를 서버에서 판정.
+//   on_track  → 정답 방향이 맞음 → 챗봇 응답 없이 종료(설명 흐름과 동일).
+//   !on_track → 오해·오답 → 유도 질문을 한 번 더 띄우고 대화를 이어간다(다음 답변도 다시 판정).
+async function handleHintFollowup() {
+    const input = document.getElementById("chat-input");
+    input.disabled = true;
+    try {
+        const res = await fetch("/api/hint-followup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                messages: chatHistory,
+                session_id: sessionId,
+                problem_index: currentProblemIndex,
+                code_context: currentCode,
+                current_problem: currentProblemData ? currentProblemData.question : null,
+            }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        if (data.on_track) {
+            return;   // 정답 방향 → 추가 응답 없음(대화 종료)
+        }
+        const reply = cleanReply(data.reply || "");
+        if (reply) {
+            appendBubble("assistant", reply);
+            chatHistory.push({ role: "assistant", content: reply });
+            awaitingFor = "hint";   // 다음 학생 답변도 같은 방식으로 판정 — 맞을 때까지 이어감
+        }
+    } catch (e) {
+        const bubble = appendBubble("assistant", "");
         bubble.className = "chat-bubble error";
         bubble.textContent = `오류: ${e.message}`;
     } finally {

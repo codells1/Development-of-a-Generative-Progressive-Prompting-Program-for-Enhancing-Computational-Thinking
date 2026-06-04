@@ -236,13 +236,6 @@ pre {
     flex-shrink: 0;
 }
 
-.lm-status {
-    font-size: 12px;
-    font-weight: 600;
-    color: #a0aec0;
-    margin-left: auto;
-}
-
 #eval-overlay {
     position: fixed;
     inset: 0;
@@ -377,9 +370,8 @@ pre {
     border-radius: 8px;
 }
 
-.rubric-row.weak {
-    border-color: #e53e3e;
-    background: #fff5f5;
+.rubric-row.na-row {
+    opacity: 0.55;   /* NA는 오류처럼 강조하지 않고 흐리게 */
 }
 
 .rubric-name {
@@ -388,12 +380,10 @@ pre {
     color: #2d3748;
 }
 
-.rubric-row.weak .rubric-name {
-    color: #c53030;
-}
-
 .rubric-chip {
     flex-shrink: 0;
+    min-width: 30px;
+    text-align: center;
     font-size: 12px;
     font-weight: 700;
     padding: 2px 9px;
@@ -401,23 +391,21 @@ pre {
     border: 1px solid transparent;
 }
 
-.rubric-chip.lv3 { background: #f0fff4; color: #276749; border-color: #38a169; }
-.rubric-chip.lv2 { background: #fffaf0; color: #b7791f; border-color: #e6a817; }
-.rubric-chip.lv1 { background: #fff5f5; color: #c53030; border-color: #e53e3e; }
-.rubric-chip.na  { background: #f1f3f6; color: #718096; border-color: #d1d5db; }
-
-.rubric-divider {
-    margin-top: 6px;
-    font-size: 11px;
-    font-weight: 600;
-    color: #718096;
-    border-top: 1px dashed #d1d5db;
-    padding-top: 8px;
-}
+/* 단계 구분용 중립 색 — '하'를 강한 빨강 경고로 쓰지 않는다(위축 방지). 강조는 왼쪽 서술 피드백이 담당. */
+.rubric-chip.g-sang { background: #eef6f0; color: #2f7d52; border-color: #c4e2cf; }
+.rubric-chip.g-jung { background: #eef1f6; color: #4a5568; border-color: #d4dbe6; }
+.rubric-chip.g-ha   { background: #f6f1ea; color: #8a6d3b; border-color: #e7dcc8; }
+.rubric-chip.g-na   { background: #f1f3f6; color: #a0aec0; border-color: #e3e6ed; }
 
 .rubric-empty {
     font-size: 12.5px;
     color: #718096;
+}
+
+/* 왼쪽 서술 피드백 카드 — 숫자 점수 대신 따뜻한 엠블럼 */
+.eval-emblem {
+    font-size: 30px;
+    line-height: 1;
 }
 
 .eval-next-btn {
