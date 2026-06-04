@@ -30,9 +30,12 @@ CODE_TOPIC_HINTS = (
     "예산·가계부 요약",
 )
 
-CT_SKILLS = ("분해", "패턴인식", "추상화", "알고리즘적사고")
+# CT 평가 루브릭 지표 (prompts/ct_evaluation_rubric.md). 1~3점 또는 N/A로 평정.
+# ⑦ 자기해결은 CT 총점과 분리 집계하므로 이 튜플에 넣지 않는다.
+CT_SKILLS = ("문제분해", "용어사용", "추상화", "실행흐름", "자료표현", "동작파악", "패턴인식")
+SELF_REG_SKILL = "자기해결"   # 메타인지/자기조절 — CT 총점과 분리
 
-# 문제 출제용 5유형 (분석용 CT_SKILLS 4지표와 별개). 순서 고정 — 분해→통합.
+# 문제 출제용 5유형 (분석용 CT 루브릭 지표와 별개). 순서 고정 — 분해→통합.
 PROBLEM_CT_SKILLS = ("분해", "패턴인식", "추상화", "알고리즘적사고", "통합")
 
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback.json")
@@ -88,8 +91,59 @@ def _extract_json(raw: str) -> dict:
     return json.loads(_slice_first_json(raw), strict=False)
 
 
-def save_feedback(session_id: str, topic: str, ct: dict) -> None:
-    """CT 점수를 feedback.json에 누적 저장한다."""
+def _norm_rubric_score(value):
+    """루브릭 점수 1칸을 정규화한다. 1~3 정수면 클램핑해 반환, N/A·무효값이면 None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip().upper()
+        if s in ("", "N/A", "NA", "NONE", "-"):
+            return None
+        try:
+            value = int(float(s))
+        except ValueError:
+            return None
+    try:
+        iv = int(value)
+    except (ValueError, TypeError):
+        return None
+    return max(1, min(3, iv))
+
+
+def score_ct(ct_raw: dict) -> dict:
+    """
+    루브릭 원시 채점 결과(ct_raw)를 정규화·집계한다.
+    - 각 CT 지표: 1~3 또는 None(N/A). N/A는 평균에서 제외.
+    - 자기해결: CT 총점과 분리 집계.
+    - ct_score: N/A 제외 CT 지표 평균을 0~100으로 환산(3점=100). 측정값 없으면 0.
+    - weak_ct: LLM 산출값이 유효(채점된 CT 지표)하면 그대로, 아니면 최솟값 지표.
+    LLM 비의존 — 순수 함수라 단독 검증 가능.
+    """
+    ct_scores = {k: _norm_rubric_score(ct_raw.get(k)) for k in CT_SKILLS}
+    graded = {k: v for k, v in ct_scores.items() if v is not None}
+    self_reg = _norm_rubric_score(ct_raw.get(SELF_REG_SKILL))
+
+    if graded:
+        avg = sum(graded.values()) / len(graded)
+        ct_score = round(avg / 3 * 100)
+    else:
+        ct_score = 0
+
+    weak_ct = ct_raw.get("weak_ct", "")
+    if weak_ct not in graded:
+        weak_ct = min(graded, key=graded.get) if graded else ""
+
+    return {
+        "ct_scores":   ct_scores,    # 값은 1~3 또는 None(=N/A)
+        "self_reg":    self_reg,     # 1~3 또는 None
+        "ct_score":    ct_score,     # 0~100
+        "weak_ct":     weak_ct,
+        "feedback":    (ct_raw.get("feedback") or "").strip(),
+    }
+
+
+def save_feedback(session_id: str, topic: str, scored: dict) -> None:
+    """정규화된 CT 채점 결과(score_ct 반환값)를 feedback.json에 누적 저장한다."""
     try:
         records = []
         if os.path.exists(FEEDBACK_FILE):
@@ -97,13 +151,19 @@ def save_feedback(session_id: str, topic: str, ct: dict) -> None:
                 records = json.load(f)
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # JSON 저장 시 None은 "N/A" 문자열로 직렬화해 가독성 유지
+        ct_scores = {k: (v if v is not None else "N/A")
+                     for k, v in scored.get("ct_scores", {}).items()}
+        self_reg = scored.get("self_reg")
         records.append({
             "session_id":  session_id,
             "timestamp":   now,
             "topic":       topic,
-            "ct_scores":   {k: ct.get(k, 1) for k in CT_SKILLS},
-            "weak_ct":     ct.get("weak_ct", ""),
-            "ct_feedback": ct.get("feedback", ""),
+            "ct_scores":   ct_scores,
+            "self_reg":    self_reg if self_reg is not None else "N/A",
+            "ct_score":    scored.get("ct_score", 0),
+            "weak_ct":     scored.get("weak_ct", ""),
+            "ct_feedback": scored.get("feedback", ""),
         })
 
         with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
@@ -125,6 +185,38 @@ def _latest_feedback(session_id: str) -> dict | None:
         return None
 
 
+def _validate_question(q: dict, label: str = "문항") -> None:
+    """문항 1개의 필드·구조를 검증한다. 실패 시 ValueError.
+    세트 생성(_parse_problem_set)과 단일 재생성(_parse_single_problem)이 공유하는
+    단일 검증 경로 — 두 경로가 절대 어긋나지 않게 한다."""
+    if not isinstance(q, dict):
+        raise ValueError(f"{label}: JSON 객체가 아님")
+    if not q.get("question"):
+        raise ValueError(f"{label}: question 필드 없음")
+    opts = q.get("options", [])
+    if not (isinstance(opts, list) and len(opts) == 4):
+        n = len(opts) if isinstance(opts, list) else "N/A"
+        raise ValueError(f"{label}: options 4개 필요 (현재 {n}개)")
+    if q.get("answer") not in ("A", "B", "C", "D"):
+        raise ValueError(f"{label}: answer 라벨 오류: {q.get('answer')!r}")
+    atype = q.get("answer_type")
+    if atype not in ("computational", "conceptual"):
+        raise ValueError(f"{label}: answer_type 오류: {atype!r}")
+    vs = q.get("verification_snippet")
+    if not isinstance(vs, str):
+        raise ValueError(f"{label}: verification_snippet 필드 없음/타입 오류")
+    if atype == "computational" and not vs.strip():
+        raise ValueError(f"{label}: computational 문항은 verification_snippet 필수")
+    if atype == "conceptual" and vs.strip():
+        raise ValueError(f"{label}: conceptual 문항은 verification_snippet 빈 문자열이어야 함")
+    fp = q.get("focus_points")
+    if not isinstance(fp, list) or not (1 <= len(fp) <= 3):
+        n = len(fp) if isinstance(fp, list) else "N/A"
+        raise ValueError(f"{label}: focus_points 1~3개 배열 필요 (현재 {n})")
+    if not all(isinstance(x, str) and x.strip() for x in fp):
+        raise ValueError(f"{label}: focus_points 각 항목은 비어있지 않은 문자열이어야 함")
+
+
 def _parse_problem_set(raw: str) -> dict:
     """문제 세트 JSON 파싱 + 구조 검증. {title, summary, questions} 반환. 실패 시 ValueError."""
     data = json.loads(_slice_first_json(raw), strict=False)
@@ -134,30 +226,7 @@ def _parse_problem_set(raw: str) -> dict:
         raise ValueError(f"questions 5개 필요 (현재 {n})")
 
     for i, q in enumerate(questions):
-        if not q.get("question"):
-            raise ValueError(f"q{i}: question 필드 없음")
-        opts = q.get("options", [])
-        if not (isinstance(opts, list) and len(opts) == 4):
-            n = len(opts) if isinstance(opts, list) else "N/A"
-            raise ValueError(f"q{i}: options 4개 필요 (현재 {n}개)")
-        if q.get("answer") not in ("A", "B", "C", "D"):
-            raise ValueError(f"q{i}: answer 라벨 오류: {q.get('answer')!r}")
-        atype = q.get("answer_type")
-        if atype not in ("computational", "conceptual"):
-            raise ValueError(f"q{i}: answer_type 오류: {atype!r}")
-        vs = q.get("verification_snippet")
-        if not isinstance(vs, str):
-            raise ValueError(f"q{i}: verification_snippet 필드 없음/타입 오류")
-        if atype == "computational" and not vs.strip():
-            raise ValueError(f"q{i}: computational 문항은 verification_snippet 필수")
-        if atype == "conceptual" and vs.strip():
-            raise ValueError(f"q{i}: conceptual 문항은 verification_snippet 빈 문자열이어야 함")
-        fp = q.get("focus_points")
-        if not isinstance(fp, list) or not (1 <= len(fp) <= 3):
-            n = len(fp) if isinstance(fp, list) else "N/A"
-            raise ValueError(f"q{i}: focus_points 1~3개 배열 필요 (현재 {n})")
-        if not all(isinstance(x, str) and x.strip() for x in fp):
-            raise ValueError(f"q{i}: focus_points 각 항목은 비어있지 않은 문자열이어야 함")
+        _validate_question(q, f"q{i}")
 
     skills = tuple(q.get("ct_skill") for q in questions)
     if skills != PROBLEM_CT_SKILLS:
@@ -232,31 +301,9 @@ def _verify_one(q: dict) -> tuple:
 
 
 def _parse_single_problem(raw: str, expected_ct_skill: str = None) -> dict:
-    """단일 문항 JSON 파싱 + 기본 검증. 재생성 응답용."""
+    """단일 문항 JSON 파싱 + 검증. 재생성 응답용 — 세트 생성과 동일한 검증 경로(_validate_question)를 탄다."""
     q = json.loads(_slice_first_json(raw), strict=False)
-    if not q.get("question"):
-        raise ValueError("question 필드 없음")
-    opts = q.get("options", [])
-    if not (isinstance(opts, list) and len(opts) == 4):
-        raise ValueError("options 4개 필요")
-    if q.get("answer") not in ("A", "B", "C", "D"):
-        raise ValueError(f"answer 라벨 오류: {q.get('answer')!r}")
-    atype = q.get("answer_type")
-    if atype not in ("computational", "conceptual"):
-        raise ValueError(f"answer_type 오류: {atype!r}")
-    vs = q.get("verification_snippet")
-    if not isinstance(vs, str):
-        raise ValueError("verification_snippet 필드 누락")
-    if atype == "computational" and not vs.strip():
-        raise ValueError("computational 문항은 verification_snippet 필수")
-    if atype == "conceptual" and vs.strip():
-        raise ValueError("conceptual 문항은 verification_snippet 빈 문자열이어야 함")
-    fp = q.get("focus_points")
-    if not isinstance(fp, list) or not (1 <= len(fp) <= 3):
-        n = len(fp) if isinstance(fp, list) else "N/A"
-        raise ValueError(f"focus_points 1~3개 배열 필요 (현재 {n})")
-    if not all(isinstance(x, str) and x.strip() for x in fp):
-        raise ValueError("focus_points 각 항목은 비어있지 않은 문자열이어야 함")
+    _validate_question(q, "재생성 문항")
     if expected_ct_skill:
         q["ct_skill"] = expected_ct_skill   # 시스템이 요구한 CT 요소로 강제 정렬
     return q
@@ -280,11 +327,15 @@ def _process_questions(questions: list, code: str, templates: str) -> list:
 
         replaced = None
         for attempt in range(VERIFY_RETRY_LIMIT):
+            raw = None
             try:
                 raw = llm.call_single_problem_gen(code, ct_skill, templates)
                 new_q = _parse_single_problem(raw, expected_ct_skill=ct_skill)
             except Exception as e:
                 print(f"[regen q{i} {ct_skill}] {attempt+1}/{VERIFY_RETRY_LIMIT} 파싱 실패 — {e}")
+                # 파싱 실패 시 원본 LLM 응답을 통째로 로그로 남긴다 (원인 추적용).
+                if raw is not None:
+                    print(f"[regen q{i} {ct_skill}] 원본 응답 ↓↓↓\n{raw}\n[regen q{i} {ct_skill}] 원본 응답 ↑↑↑")
                 continue
             ok2, detail2 = _verify_one(new_q)
             if ok2:
@@ -542,21 +593,32 @@ def chat():
         messages = [{"role": "system", "content": system_prompt}] + history
         user_message_for_log = history[-1]["content"] if history else ""
 
-    full_reply_holder = []
+    visible_parts = []
 
     def generate():
+        # <think>...</think> 추론 토큰을 학생 화면에 내보내지 않도록 스트림에서 제거
+        think_filter = llm.ThinkStreamFilter()
         try:
             stream = llm.stream_chatbot(messages)
             for chunk in stream:
                 delta = chunk.choices[0].delta.content or ""
-                if delta:
-                    full_reply_holder.append(delta)
-                    yield f"data: {json.dumps({'delta': delta})}\n\n"
+                if not delta:
+                    continue
+                visible = think_filter.feed(delta)
+                if visible:
+                    visible_parts.append(visible)
+                    yield f"data: {json.dumps({'delta': visible})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
 
-        full_reply = "".join(full_reply_holder)
+        tail = think_filter.flush()
+        if tail:
+            visible_parts.append(tail)
+            yield f"data: {json.dumps({'delta': tail})}\n\n"
+
+        # 저장·재전송 모두 think 제거된 본문으로 통일 (로그·후속 맥락 오염 방지)
+        full_reply = "".join(visible_parts)
         save_turn(session_id, user_message_for_log, full_reply, code_context)
         yield f"data: {json.dumps({'done': True})}\n\n"
 
@@ -591,27 +653,19 @@ def evaluate():
     try:
         ct_raw = _extract_json(llm.call_log_analysis(log_text))
 
-        # CT 4요소 점수 정규화 (1~5 클램핑)
-        ct_scores = {k: max(1, min(5, int(ct_raw.get(k, 1)))) for k in CT_SKILLS}
+        # 루브릭(prompts/ct_evaluation_rubric.md) 1~3·N/A 채점 → 정규화·집계
+        scored = score_ct(ct_raw)
+        save_feedback(session_id, topic, scored)
 
-        # weak_ct 보정: LLM 산출값이 유효 키가 아니면 최솟값 키로 재계산
-        weak_ct = ct_raw.get("weak_ct", "")
-        if weak_ct not in ct_scores:
-            weak_ct = min(ct_scores, key=ct_scores.get)
-
-        # 평균(1~5) → 100점 환산 (프론트 현행 호환)
-        ct_score = round(sum(ct_scores.values()) / len(ct_scores) * 20)
-
-        save_feedback(
-            session_id, topic,
-            {**ct_scores, "weak_ct": weak_ct, "feedback": ct_raw.get("feedback", "")},
-        )
-
+        # 프론트는 ct_score(0~100)와 ct_feedback만 사용. 지표 상세는 N/A→"N/A"로 직렬화.
+        ct_scores_out = {k: (v if v is not None else "N/A")
+                         for k, v in scored["ct_scores"].items()}
         return jsonify({
-            "ct_scores":   ct_scores,
-            "weak_ct":     weak_ct,
-            "ct_score":    ct_score,
-            "ct_feedback": ct_raw.get("feedback", ""),
+            "ct_scores":   ct_scores_out,
+            "self_reg":    scored["self_reg"] if scored["self_reg"] is not None else "N/A",
+            "weak_ct":     scored["weak_ct"],
+            "ct_score":    scored["ct_score"],
+            "ct_feedback": scored["feedback"],
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 503

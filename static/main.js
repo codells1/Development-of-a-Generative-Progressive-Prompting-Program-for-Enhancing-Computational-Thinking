@@ -166,32 +166,55 @@ function submitAnswer() {
     if (!selectedOption || !currentProblemData) return;
 
     const isCorrect = selectedOption === currentProblemData.answer;
-    submittedAnswers.push(selectedOption);
+    const badge = document.getElementById("feedback-badge");
+    const feedbackArea = document.getElementById("feedback-area");
+    const nextBtn = document.getElementById("next-problem-btn");
 
-    // 선택지 비활성화 + 정답/오답 색상
+    if (!isCorrect) {
+        // 정답은 절대 알려주지 않는다. 고른 보기만 '틀림'으로 표시·잠그고 다시 풀게 한다.
+        // 정답을 맞히기 전까지 다음 문제로 넘어갈 수 없다.
+        const picked = selectedOption;
+        document.querySelectorAll(".option-btn").forEach(btn => {
+            if (btn.dataset.value === picked) {
+                btn.classList.add("wrong");
+                btn.disabled = true;        // 같은 오답 재선택 방지
+            }
+        });
+
+        badge.className = "feedback-badge feedback-wrong";
+        badge.textContent = "✗ 틀렸어요. 다른 보기를 다시 골라 보세요.";
+        document.getElementById("feedback-explanation").textContent = "";   // 해설=정답 누설이라 숨김
+        nextBtn.classList.add("hidden");                                    // 다음 문제 잠금
+        document.getElementById("answer-submit-row").classList.remove("hidden");
+        feedbackArea.classList.remove("hidden");
+
+        // 선택 초기화 → 새 보기를 고르기 전까지 제출 비활성화
+        selectedOption = null;
+        document.querySelectorAll(".option-btn").forEach(b => b.classList.remove("selected"));
+        document.getElementById("submit-btn").disabled = true;
+        return;
+    }
+
+    // ── 정답 ──
+    submittedAnswers.push(selectedOption);   // 정답일 때만 1회 기록 (문항당 정확히 1개)
     document.querySelectorAll(".option-btn").forEach(btn => {
         btn.disabled = true;
         if (btn.dataset.value === currentProblemData.answer) {
             btn.classList.add("correct");
-        } else if (btn.dataset.value === selectedOption && !isCorrect) {
-            btn.classList.add("wrong");
         }
     });
 
-    // 피드백 표시
-    const badge = document.getElementById("feedback-badge");
-    badge.className = "feedback-badge " + (isCorrect ? "feedback-correct" : "feedback-wrong");
-    badge.textContent = isCorrect
-        ? "✓ 정답"
-        : `✗ 오답 — 정답: ${currentProblemData.answer}`;
+    badge.className = "feedback-badge feedback-correct";
+    badge.textContent = "✓ 정답";
     document.getElementById("feedback-explanation").textContent =
         currentProblemData.explanation || "";
+    nextBtn.classList.remove("hidden");
 
     document.getElementById("answer-submit-row").classList.add("hidden");
-    document.getElementById("feedback-area").classList.remove("hidden");
+    feedbackArea.classList.remove("hidden");
 
     // 힌트 없이 정답 → 챗봇이 풀이 설명 요청. 답글 받기 전까지 "다음 문제" 잠금.
-    if (isCorrect && !hintUsed) {
+    if (!hintUsed) {
         awaitingFor = "explain";
         setNextProblemEnabled(false);
         hideHintButton();

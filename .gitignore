@@ -23,3 +23,6 @@ Modelfile
 
 # 세션 피드백 데이터 (로컬 생성)
 feedback.json
+
+# 생성된 문항 세트 보관 (로컬 생성, focus_points 등 내부 필드 포함)
+problem_sets.json

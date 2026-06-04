@@ -15,7 +15,7 @@ body {
 .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 2fr;
+    grid-template-rows: 1fr 1fr;   /* 오른쪽 열의 문제·챗봇 패널을 1:1 비율로 */
     height: 100vh;
     gap: 8px;
     padding: 8px;
@@ -546,5 +546,10 @@ pre {
 #feedback-area button {
     align-self: flex-end;
     margin-top: 2px;
+}
+
+/* 오답 시 '다음 문제'를 숨겨 정답 전까지 못 넘어가게 한다 */
+#next-problem-btn.hidden {
+    display: none;
 }
 

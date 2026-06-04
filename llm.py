@@ -2,9 +2,23 @@
 llm.py — 모든 LLM 호출을 역할별로 분리·관리하는 중앙 모듈
 """
 
+import os
 import re
 import threading
 from openai import OpenAI
+
+_PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
+
+
+def _load_prompt(filename: str) -> str:
+    """prompts/ 폴더의 마크다운 파일을 읽어 문자열로 돌려준다. 없으면 빈 문자열."""
+    path = os.path.join(_PROMPTS_DIR, filename)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError as e:
+        print(f"프롬프트 파일 로드 실패({filename}): {e}")
+        return ""
 
 BASE_URL = "http://localhost:1234/v1"
 MODEL    = "local-model"
@@ -129,25 +143,31 @@ PROBLEM_SET_RESPONSE_FORMAT = {
     "json_schema": {"name": "problem_set", "strict": True, "schema": PROBLEM_SET_SCHEMA},
 }
 
+# 단일 문항 재생성용 스키마 — 세트의 문항 item 스키마를 그대로 재사용해 두 경로가
+# 절대 어긋나지 않게 한다. (ct_skill·question·options 4개·answer·answer_type·
+# verification_snippet·explanation·focus_points 전부 required, additionalProperties False.)
+SINGLE_PROBLEM_SCHEMA = PROBLEM_SET_SCHEMA["properties"]["questions"]["items"]
+
+SINGLE_PROBLEM_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "single_problem", "strict": True, "schema": SINGLE_PROBLEM_SCHEMA},
+}
+
+
+# CT 평가 루브릭은 prompts/ct_evaluation_rubric.md를 단일 출처로 삼는다.
+# (채점 지표·기준·출력 JSON 형식 모두 그 파일에서 정의. 여기선 분석 지시만 덧붙인다.)
+_CT_RUBRIC_MD = _load_prompt("ct_evaluation_rubric.md")
 
 SYSTEM_CT_ANALYSIS = (
-    "You are an educational assessment AI.\n"
-    "Analyze ONLY the student's chat messages to evaluate their computational thinking (CT).\n"
-    "Do NOT base scores on quiz answer correctness — focus on HOW the student asked questions.\n\n"
-    "CT Rubric (score each element 1~5):\n"
-    "- 분해(1~5): 문제를 역할별 부분으로 나눠 질문했는가\n"
-    "  1=질문 없음, 3=일부 분해 시도, 5=체계적 분해 질문\n"
-    "- 패턴인식(1~5): 반복·규칙성을 발견하는 질문을 했는가\n"
-    "  1=없음, 3=패턴 언급, 5=규칙을 스스로 발견하는 질문\n"
-    "- 추상화(1~5): 변수·함수의 역할을 일반화해 사고했는가\n"
-    "  1=없음, 3=의미 질문, 5=일반화·상위 개념 연결\n"
-    "- 알고리즘적사고(1~5): 실행 순서·흐름을 추적하는 질문을 했는가\n"
-    "  1=없음, 3=순서 질문, 5=흐름을 단계별로 추적\n\n"
-    "weak_ct: 가장 낮은 점수의 CT 요소명. 동점이면 학습 효과가 큰 요소 선택.\n"
-    "If no student chat messages exist, score all elements 1.\n\n"
-    'Respond ONLY with valid JSON (no markdown, no extra text):\n'
-    '{"분해": 점수, "패턴인식": 점수, "추상화": 점수, "알고리즘적사고": 점수, '
-    '"weak_ct": "요소명", "feedback": "한국어 피드백 2~3문장"}'
+    "당신은 교육 평가 AI다.\n"
+    "오직 '학생의 발화(채팅 메시지)'만 근거로 학생의 컴퓨팅 사고력(CT)을 평정한다.\n"
+    "퀴즈 정답 여부로 점수를 매기지 말고, 학생이 '어떻게 질문·진술했는가'에 집중한다.\n\n"
+    "아래 루브릭으로 각 지표를 채점하라.\n"
+    "----- CT 평가 루브릭 -----\n"
+    f"{_CT_RUBRIC_MD}\n"
+    "----- 루브릭 끝 -----\n\n"
+    "루브릭의 '출력 형식' 절에 정의된 JSON 객체 하나만 출력하라. "
+    "마크다운 코드펜스·설명 문장을 덧붙이지 마라."
 )
 
 # ── Reasoning Fallback (Qwen3 thinking mode) ───────────────────────
@@ -182,6 +202,77 @@ def _extract_from_reasoning(reasoning: str) -> str:
     return candidates[-1] if candidates else ""
 
 
+# ── Think 토큰 제거 (Qwen3 추론 모드가 <think>...</think>를 본문에 섞어 출력) ──
+
+_THINK_OPEN  = "<think>"
+_THINK_CLOSE = "</think>"
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think(text: str) -> str:
+    """완성된 문자열에서 <think>...</think> 블록을 통째로 제거한다."""
+    # 닫는 태그 없이 think로만 끝나는 비정상 출력도 잘라낸다.
+    text = _THINK_RE.sub("", text)
+    open_idx = text.lower().find(_THINK_OPEN)
+    if open_idx != -1 and _THINK_CLOSE not in text.lower()[open_idx:]:
+        text = text[:open_idx]
+    return text
+
+
+class ThinkStreamFilter:
+    """스트리밍 델타에서 <think>...</think> 구간을 실시간 제거한다.
+
+    태그가 청크 경계에 걸쳐 쪼개져도 안전하도록, 부분 태그가 될 수 있는
+    꼬리만 버퍼에 남기고 그 외 텍스트만 방출한다.
+    """
+
+    def __init__(self):
+        self._buf = ""
+        self._in_think = False
+
+    def _safe_tail(self, tag: str) -> int:
+        """버퍼 접미사가 tag 접두사와 일치하는 최대 길이(부분 태그 후보)를 반환."""
+        for k in range(min(len(tag) - 1, len(self._buf)), 0, -1):
+            if self._buf.endswith(tag[:k]):
+                return k
+        return 0
+
+    def feed(self, text: str) -> str:
+        """델타를 받아 화면에 내보낼(생각 구간이 제거된) 텍스트를 반환."""
+        self._buf += text
+        out = []
+        while self._buf:
+            if not self._in_think:
+                idx = self._buf.find(_THINK_OPEN)
+                if idx != -1:
+                    out.append(self._buf[:idx])
+                    self._buf = self._buf[idx + len(_THINK_OPEN):]
+                    self._in_think = True
+                    continue
+                keep = self._safe_tail(_THINK_OPEN)
+                out.append(self._buf[:len(self._buf) - keep] if keep else self._buf)
+                self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                break
+            else:
+                idx = self._buf.find(_THINK_CLOSE)
+                if idx != -1:
+                    self._buf = self._buf[idx + len(_THINK_CLOSE):]
+                    self._in_think = False
+                    continue
+                keep = self._safe_tail(_THINK_CLOSE)
+                self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                break
+        return "".join(out)
+
+    def flush(self) -> str:
+        """스트림 종료 시 남은 버퍼 처리. think 안이면 버리고, 밖이면 방출."""
+        if self._in_think:
+            self._buf = ""
+            return ""
+        out, self._buf = self._buf, ""
+        return out
+
+
 # ── Single Entry Point ─────────────────────────────────────────────
 
 def _generate(messages: list, temperature: float, max_tokens: int = 4096,
@@ -199,7 +290,7 @@ def _generate(messages: list, temperature: float, max_tokens: int = 4096,
     with _llm_lock:
         resp = _client.chat.completions.create(**kwargs)
     choice = resp.choices[0]
-    content = (choice.message.content or "").strip()
+    content = strip_think(choice.message.content or "").strip()
     if not content:
         reasoning = getattr(choice.message, "reasoning_content", None) or ""
         content = _extract_from_reasoning(reasoning)
@@ -264,6 +355,7 @@ def call_single_problem_gen(code: str, ct_skill: str, templates: str = "") -> st
          {"role": "user",   "content": user_content}],
         TEMP_CREATIVE,
         max_tokens=1024,
+        response_format=SINGLE_PROBLEM_RESPONSE_FORMAT,
     )
 
 
