@@ -93,7 +93,7 @@ async function loadAllProblems() {
     const res = await fetch("/api/generate-problem", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: currentCode }),
+        body: JSON.stringify({ code: currentCode, session_id: sessionId }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
@@ -316,6 +316,7 @@ async function triggerChatbot(triggerType) {
             body: JSON.stringify({
                 trigger: triggerType,
                 session_id: sessionId,
+                problem_index: currentProblemIndex,
                 code_context: currentCode,
                 current_problem: currentProblemData ? currentProblemData.question : null,
             }),
@@ -363,6 +364,7 @@ async function sendMessage() {
             body: JSON.stringify({
                 messages: chatHistory,
                 session_id: sessionId,
+                problem_index: currentProblemIndex,
                 code_context: currentCode,
                 current_problem: currentProblemData ? currentProblemData.question : null,
             }),

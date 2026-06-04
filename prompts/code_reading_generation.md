@@ -17,7 +17,7 @@
 
 ---
 
-## 1. 산출 흐름 (2단계)
+## 1. 산출 흐름 (2단계) — 모델 부담을 낮추는 게 핵심
 
 `/api/session/start`가 아래 두 단계를 묶어 호출하고, 합친 결과를 반환한다.
 
@@ -27,36 +27,41 @@ Stage 2  문항 생성    : 위 코드 + RAG(problem_templates 참고) → MCQ 5
 검증     코드 실행    : answer_type="computational" 문항만 실행해 정답 일치 확인 (서버 로직)
 ```
 
-> 작은 모델(Qwen3 8B) 안정성을 위해 코드와 문항을 **두 번의 LLM 호출**로 나눈다. 한 호출에 전부 넣지 말 것.
+**Qwen3 8B는 작은 모델이므로 한 번에 많은 걸 시키면 깨진다. 다음을 지킨다:**
+- 코드와 문항을 **반드시 두 번의 LLM 호출**로 나눈다(한 호출에 코드+5문항 동시 생성 금지).
+- **Stage 1은 JSON이 아니라 순수 코드 블록**으로 출력시킨다(긴 코드를 JSON 문자열로 escape하다 깨지는 것을 방지).
+- 코드는 **짧게**(2장 기준). 코드가 길수록 생성·JSON 직렬화·검증 모두에서 실패율이 올라간다.
+- `verification_snippet`도 **짧게** 유지(필요한 함수 + print 한 줄).
 
 ---
 
 ## 2. Stage 1 — 코드 생성 규칙
 
-### 2.1 코드의 조건
+### 2.1 코드의 조건 (Qwen3 8B 기준으로 짧게)
 | 항목 | 기준 |
 |---|---|
 | 형태 | 실행 가능한 **단일 완결 프로그램** (조각 ❌) |
-| 길이 | **최대 30줄 (약 15~30줄)** |
+| 길이 | **최대 20줄 (권장 12~18줄)** |
 | 함수 | **1~2개** (분해·통합 문항을 위해 **2개 권장**) |
 | 의존성 | 표준 라이브러리만, **외부 입력 없이** 실행 (데이터는 코드 안에 고정, `input()` 금지) |
 | 이름 | 변수·함수 이름은 의미가 드러나게 |
-| 주석 | 학생용 코드에는 최소화 |
+| 주석 | 학생용 코드에는 넣지 않음 |
 | 결과 | `print`로 사람이 읽을 결과 출력 |
 
-> **길이 주의**: 30줄을 넘기지 말 것. 중·고생이 한 화면에서 읽고 5개 사고력을 끌어낼 수 있는 분량이 목표다. 단, 10줄 미만으로 너무 짧으면 통합·분해 문항의 '재료'가 부족해지니 **하한 15줄**을 권장한다. 길이는 줄 수보다 "2.2 구성요소가 다 들어갔는가"로 판단한다.
+> **길이 주의**: 20줄을 넘기지 말 것. Qwen3 8B가 안정적으로 생성·검증할 수 있고, 중·고생이 한눈에 읽을 수 있는 분량이다. 단, 8줄 미만으로 너무 짧으면 통합·분해 문항의 '재료'가 부족하니 **하한 12줄**을 권장한다. 길이는 줄 수보다 "2.2 구성요소가 들어갔는가"로 판단한다.
 
-### 2.2 5유형을 담기 위한 필수 구성요소 (생성 후 자체 점검)
+### 2.2 5유형을 담기 위한 최소 구성요소 (생성 후 자체 점검)
+짧은 코드라도 아래가 들어가게 한다.
 - 구분되는 함수 또는 처리 단계가 2개 이상 (분해)
-- 반복문 또는 유사 구조 반복 (패턴인식)
-- 함수/매개변수로 세부를 감춘 부분 (추상화)
-- 조건 분기 또는 순차 처리 절차 (알고리즘)
+- 반복문 (패턴인식)
+- 함수로 세부를 감춘 부분 (추상화)
+- 조건 분기 (알고리즘)
 - 부분들이 모여 하나의 목적을 이루는 구조 (통합)
 
-> 함수가 1개뿐이면 분해·통합 문항이 약해진다. 가능하면 **함수 2개**로 역할을 나누는 것을 권장한다.
+> **권장 형태**: 함수 2개 = "값을 계산하는 함수 1개(반복+조건 포함) + 그 결과를 쓰는 함수 1개(출력/판정)". 12~18줄로 다섯 구성요소를 모두 담기에 가장 안정적이다.
 
 ### 2.3 RAG
-`rag_docs/code_examples/`의 통합형 예제를 검색해 "참고 예시"로 프롬프트에 넣되, **구조·스타일만 본뜨고 그대로 복사 금지**. 검색 쿼리는 폐기된 stage 키워드 대신 **주제/개념 키워드**(예: "리스트 합계 처리", "딕셔너리 집계")로.
+`rag_docs/code_examples/`의 예제를 검색해 "참고 예시"로 프롬프트에 넣되, **구조·스타일만 본뜨고 그대로 복사 금지**. (예제 파일이 더 길더라도, 생성 코드는 2.1 기준으로 짧게.) 검색 쿼리는 폐기된 stage 키워드 대신 **주제/개념 키워드**(예: "리스트 합계", "조건 카운트")로.
 
 ---
 
@@ -79,9 +84,9 @@ Stage 2  문항 생성    : 위 코드 + RAG(problem_templates 참고) → MCQ 5
 > 경향(강제 아님): 보통 알고리즘적사고(가끔 패턴인식)가 `computational`, 분해·추상화·통합은 `conceptual`. 모든 문항을 억지로 computational로 만들지 말 것.
 
 ### 3.3 verification_snippet 규칙 (computational 전용)
-- **자족 실행 코드**: 문제의 정답 값을 구하는 데 필요한 코드(관련 함수 정의 포함)를 담고, **정답 값 하나만 `print`** 한다.
+- **자족 실행 코드**: 정답 값을 구하는 데 필요한 코드(관련 함수 정의 포함)를 담고, **정답 값 하나만 `print`** 한다. 가능한 한 짧게.
 - `input()`·파일·네트워크·무한루프 금지. 출력은 정답 값 한 줄.
-- **보기(option)의 값과 형식을 맞춘다.** 예: 보기가 `B. 12000`이면 스니펫은 `12000`을 출력. (서버가 stdout과 정답 보기의 값 부분을 비교한다 → 3.4)
+- **보기(option)의 값과 형식을 맞춘다.** 예: 보기가 `B. 3`이면 스니펫은 `3`을 출력. (서버가 stdout과 정답 보기의 값 부분을 비교 → 3.4)
 
 ### 3.4 코드 실행 검증 (서버 로직 — LLM 아님)
 `computational` 문항에 대해 서버가 수행:
@@ -128,6 +133,7 @@ Stage 2  문항 생성    : 위 코드 + RAG(problem_templates 참고) → MCQ 5
 
 - `questions`는 정확히 5개, `ct_skill` 순서: 분해 → 패턴인식 → 추상화 → 알고리즘적사고 → 통합.
 - `difficulty`는 **세트 단위 1개**(문항별 난이도 필드 없음).
+- `code` 필드는 Stage 1에서 받은 코드 블록을 서버가 문자열로 넣는다(모델이 JSON 안에서 직접 escape하게 두지 않는다).
 
 **학생에게 보낼 때**(프론트 전송): 각 문항에서 `focus_points`, `verification_snippet`, `answer_type` **제거**. (`answer`는 기존대로 클라이언트 채점에 사용하므로 유지.)
 
@@ -135,84 +141,84 @@ Stage 2  문항 생성    : 위 코드 + RAG(problem_templates 참고) → MCQ 5
 
 ## 5. 완성 예시 (Few-shot · 프롬프트에 함께 넣을 것)
 
-> 코드 20줄, 함수 2개. 합계 12000 → 등급 "소액". 검증 스니펫 출력은 `12000`. (실행 확인 완료)
+> 코드 14줄, 함수 2개. 합격자 3명. 검증 스니펫 출력은 `3`. (실행 확인 완료)
 
 ```json
 {
-  "title": "장바구니 합계와 주문 등급",
-  "summary": "장바구니 상품들의 합계를 구하고 금액에 따라 주문 등급을 매긴다.",
+  "title": "점수 리스트의 합격자 수 세기",
+  "summary": "점수 리스트에서 60점 이상 합격자 수를 세어 요약을 출력한다.",
   "difficulty": "중3",
-  "code": "def total_price(cart):\n    total = 0\n    for item in cart:\n        total += item[\"price\"] * item[\"qty\"]\n    return total\n\ndef grade_order(total):\n    if total >= 30000:\n        return \"VIP\"\n    elif total >= 15000:\n        return \"일반\"\n    return \"소액\"\n\ncart = [\n    {\"name\": \"공책\", \"price\": 3000, \"qty\": 2},\n    {\"name\": \"펜\", \"price\": 1500, \"qty\": 4},\n]\ntotal = total_price(cart)\nprint(f\"주문 합계: {total}원\")\nprint(f\"등급: {grade_order(total)}\")",
+  "code": "def count_pass(scores):\n    passed = 0\n    for score in scores:\n        if score >= 60:\n            passed += 1\n    return passed\n\ndef summary(scores):\n    total = count_pass(scores)\n    print(f\"전체 학생: {len(scores)}명\")\n    print(f\"합격(60점 이상): {total}명\")\n\nscores = [85, 50, 72, 40, 90]\nsummary(scores)",
   "questions": [
     {
       "ct_skill": "분해",
       "question": "이 프로그램은 두 함수로 나뉘어 있습니다. 각 함수의 역할을 바르게 짝지은 것은?",
       "options": [
-        "A. total_price=등급 판정, grade_order=합계 계산",
-        "B. total_price=합계 계산, grade_order=등급 판정",
-        "C. total_price=출력, grade_order=합계 계산",
+        "A. count_pass=요약 출력, summary=합격자 수 세기",
+        "B. count_pass=합격자 수 세기, summary=요약 출력",
+        "C. count_pass=점수 정렬, summary=합격자 수 세기",
         "D. 두 함수는 같은 일을 한다"
       ],
       "answer": "B",
       "answer_type": "conceptual",
       "verification_snippet": "",
-      "explanation": "total_price는 가격×수량을 더해 합계를, grade_order는 그 합계로 등급을 정한다.",
-      "focus_points": ["total_price는 합계를 구한다", "grade_order는 금액으로 등급을 정한다"]
+      "explanation": "count_pass는 60점 이상인 점수의 개수를 세고, summary는 그 결과로 요약을 출력한다.",
+      "focus_points": ["count_pass는 합격자 수를 센다", "summary는 결과를 출력한다"]
     },
     {
       "ct_skill": "패턴인식",
-      "question": "total_price의 반복문에서 반복적으로 일어나는 동작으로 가장 알맞은 것은?",
+      "question": "count_pass의 반복문에서 반복적으로 일어나는 동작으로 가장 알맞은 것은?",
       "options": [
-        "A. 각 상품의 (가격×수량)을 total에 더한다",
-        "B. 각 상품의 이름을 출력한다",
-        "C. 가장 비싼 상품을 찾는다",
-        "D. 상품을 가격순으로 정렬한다"
+        "A. 조건을 만족하는 점수를 만날 때마다 passed를 1 늘린다",
+        "B. 모든 점수를 화면에 출력한다",
+        "C. 가장 높은 점수를 찾는다",
+        "D. 점수를 정렬한다"
       ],
       "answer": "A",
       "answer_type": "conceptual",
       "verification_snippet": "",
-      "explanation": "for가 cart의 원소를 차례로 꺼내 (가격×수량)을 total에 누적한다.",
-      "focus_points": ["item['price']*item['qty']을 누적", "cart 원소를 차례로 순회"]
+      "explanation": "for가 점수를 차례로 보며 60 이상일 때만 passed를 누적한다(조건부 카운트 패턴).",
+      "focus_points": ["score >= 60일 때만 passed += 1", "리스트를 차례로 순회"]
     },
     {
       "ct_skill": "추상화",
-      "question": "grade_order 함수가 숨기고(추상화하고) 있는 것은?",
+      "question": "count_pass 함수가 숨기고(추상화하고) 있는 것은?",
       "options": [
-        "A. 합계를 계산하는 과정",
-        "B. 등급을 정하는 구체적인 금액 기준(구간)",
-        "C. 상품의 이름",
-        "D. 반복문의 동작"
+        "A. 결과를 출력하는 과정",
+        "B. '60점 이상인지 검사하며 개수를 세는' 구체적 과정",
+        "C. 학생 수를 구하는 과정",
+        "D. 함수 이름"
       ],
       "answer": "B",
       "answer_type": "conceptual",
       "verification_snippet": "",
-      "explanation": "if-elif 금액 구간 규칙이 함수 뒤로 감춰져, 호출부는 '등급 판정'이라는 의도만 안다.",
-      "focus_points": ["금액 구간 if-elif가 함수 안에 캡슐화됨", "호출부는 내부 기준을 몰라도 됨"]
+      "explanation": "반복·조건으로 개수를 세는 과정이 함수 뒤로 감춰져, 호출부는 '합격자 수'라는 결과만 받는다.",
+      "focus_points": ["반복+조건 카운트가 함수 안에 캡슐화됨", "호출부는 내부 과정을 몰라도 됨"]
     },
     {
       "ct_skill": "알고리즘적사고",
-      "question": "cart가 위와 같을 때, '주문 합계'로 출력되는 값은?",
-      "options": ["A. 10500", "B. 12000", "C. 13500", "D. 9000"],
+      "question": "scores가 위와 같을 때, '합격(60점 이상)'으로 출력되는 인원수는?",
+      "options": ["A. 2", "B. 3", "C. 4", "D. 5"],
       "answer": "B",
       "answer_type": "computational",
-      "verification_snippet": "def total_price(cart):\n    total = 0\n    for item in cart:\n        total += item[\"price\"] * item[\"qty\"]\n    return total\n\nprint(total_price([{\"name\": \"공책\", \"price\": 3000, \"qty\": 2}, {\"name\": \"펜\", \"price\": 1500, \"qty\": 4}]))",
-      "explanation": "공책 3000×2=6000, 펜 1500×4=6000, 합계 12000.",
-      "focus_points": ["각 상품 가격×수량을 구해 더한다", "6000+6000=12000"]
+      "verification_snippet": "def count_pass(scores):\n    passed = 0\n    for score in scores:\n        if score >= 60:\n            passed += 1\n    return passed\n\nprint(count_pass([85, 50, 72, 40, 90]))",
+      "explanation": "85, 72, 90이 60 이상이므로 합격자는 3명.",
+      "focus_points": ["각 점수가 60 이상인지 확인", "85·72·90 → 3명"]
     },
     {
       "ct_skill": "통합",
       "question": "이 프로그램 전체가 하는 일을 가장 잘 설명한 것은?",
       "options": [
-        "A. 장바구니 상품들의 합계를 구하고 그 금액으로 주문 등급을 매긴다",
-        "B. 상품을 가격순으로 정렬한다",
-        "C. 가장 비싼 상품을 찾는다",
-        "D. 상품 개수를 센다"
+        "A. 점수 리스트에서 합격자 수를 세어 전체 인원과 함께 요약을 출력한다",
+        "B. 점수를 높은 순으로 정렬한다",
+        "C. 평균 점수를 계산한다",
+        "D. 가장 높은 점수를 찾는다"
       ],
       "answer": "A",
       "answer_type": "conceptual",
       "verification_snippet": "",
-      "explanation": "합계 계산(total_price)과 등급 판정(grade_order)이 결합해 하나의 주문 처리를 완성한다.",
-      "focus_points": ["두 함수가 합계→등급으로 연결", "전체 목적은 합계+등급 산출"]
+      "explanation": "count_pass(세기)와 summary(출력)가 결합해 합격자 요약을 완성한다.",
+      "focus_points": ["count_pass와 summary가 연결됨", "전체 목적은 합격자 요약 출력"]
     }
   ]
 }
@@ -222,18 +228,19 @@ Stage 2  문항 생성    : 위 코드 + RAG(problem_templates 참고) → MCQ 5
 
 ## 6. LLM 프롬프트 템플릿 (Qwen3 8B)
 
-> 규칙·스키마·예시는 **시스템 프롬프트**에 고정으로 넣고, 사용자 메시지로 파라미터만 바꾼다. Qwen3는 형식 지시에 민감하므로 **"JSON만 출력"**을 강조한다. `temperature`는 생성 0.6 권장.
+> 규칙·스키마·예시는 **시스템 프롬프트**에 고정으로 넣고, 사용자 메시지로 파라미터만 바꾼다. Qwen3는 형식 지시에 민감하므로 **"JSON만 출력"**(Stage 2) / **"코드 블록만 출력"**(Stage 1)을 강조한다. `temperature`는 생성 0.6 권장.
 
 ### Stage 1 — 코드 생성 (system)
 ```
 너는 중·고등학생의 '코드 읽기' 학습용 파이썬 예제를 만드는 출제자다.
 규칙:
 1. 외부 입력 없이 그대로 실행되는 단일 완결 프로그램 1개. 데이터는 코드 안에 고정, input() 금지.
-2. 길이 최대 30줄(약 15~30줄), 함수 1~2개. 30줄을 넘기지 마라. 분해·통합 문항을 위해 함수 2개를 권장한다. 변수·함수 이름은 의미가 드러나게.
-3. 코드에는 (a)구분되는 함수 또는 처리 단계 2개 이상, (b)반복문, (c)함수로 세부를 감춘 부분, (d)조건 분기, (e)부분이 합쳐져 하나의 목적을 이루는 구조가 모두 있어야 한다.
-4. 아래 참고 예시의 구조·스타일만 본뜨고 그대로 복사하지 마라.
+2. 길이 최대 20줄(권장 12~18줄), 함수 1~2개. 20줄을 절대 넘기지 마라. 분해·통합 문항을 위해 함수 2개를 권장한다. 변수·함수 이름은 의미가 드러나게.
+3. 권장 형태: 값을 계산하는 함수 1개(반복+조건 포함) + 그 결과를 쓰는 함수 1개(출력/판정).
+4. 코드에는 (a)함수 또는 처리 단계 2개 이상, (b)반복문, (c)함수로 세부를 감춘 부분, (d)조건 분기, (e)부분이 합쳐져 하나의 목적을 이루는 구조가 모두 있어야 한다.
+5. 아래 참고 예시의 구조·스타일만 본뜨고 그대로 복사하지 마라.
 [참고 예시: {RAG: code_examples 검색 결과}]
-5. 출력은 파이썬 코드 블록 하나만. 설명 문장 금지.
+6. 출력은 파이썬 코드 블록 하나만. 설명 문장·JSON 금지.
 ```
 사용자 메시지: `난이도: {difficulty} / 주제 힌트: {topic_or_concept}`
 
@@ -243,7 +250,7 @@ Stage 2  문항 생성    : 위 코드 + RAG(problem_templates 참고) → MCQ 5
 규칙:
 1. 5문항의 ct_skill은 순서대로 분해, 패턴인식, 추상화, 알고리즘적사고, 통합. 각 1문항. 코드를 읽으면 풀 수 있어야 한다.
 2. 각 문항 answer_type을 분류한다.
-   - computational: 코드를 실행하면 값이 하나로 정해지는 문항 → verification_snippet 필수(정답 값 하나만 print하는 자족 실행 코드, input 금지).
+   - computational: 코드를 실행하면 값이 하나로 정해지는 문항 → verification_snippet 필수(정답 값 하나만 print하는 짧은 자족 실행 코드, input 금지).
    - conceptual: 의미·구조·목적을 묻는 문항 → verification_snippet은 "".
    computational 문항의 보기 값 형식은 verification_snippet의 출력과 정확히 일치시켜라.
 3. 각 문항에 focus_points(채점·유도용 핵심 포인트 1~3개)를 넣는다. 정답을 그대로 적지 말고 '생각의 단서'로 적는다.
@@ -258,7 +265,7 @@ Stage 2  문항 생성    : 위 코드 + RAG(problem_templates 참고) → MCQ 5
 ## 7. 운영 체크리스트 (생성 직후)
 
 - [ ] 코드가 외부 입력 없이 그대로 실행되는가 (2.2 다섯 구성요소 포함)
-- [ ] 코드가 30줄 이하, 함수 1~2개인가
+- [ ] 코드가 **20줄 이하, 함수 1~2개**인가
 - [ ] 문항 5개, ct_skill 순서가 분해→통합인가
 - [ ] computational 문항마다 verification_snippet이 있고, 실행 출력이 정답 보기와 일치하는가
 - [ ] conceptual 문항의 verification_snippet이 ""인가

@@ -1,39 +1,23 @@
 # 주제: 문장 속 단어 빈도 분석 (통합/융합)
 # 난이도: 고1~고2
-# 사용 개념: 문자열 처리, 딕셔너리, 리스트, 함수, 반복문, 정렬
-# 통합 포인트: 전처리·집계·정렬·출력이 모여 하나의 빈도 분석기를 이룬다
-
-def clean_text(text):
-    for mark in [",", ".", "!", "?"]:
-        text = text.replace(mark, "")
-    return text.lower()
+# 사용 개념: 문자열 처리, 딕셔너리, 함수, 반복문, 정렬
+# 통합 포인트: 빈도 집계 함수와 상위 단어 출력 함수가 모여 하나의 빈도 분석기를 이룬다
 
 def count_words(text):
     counts = {}
-    for word in text.split():
+    for word in text.lower().split():
         if word in counts:
             counts[word] += 1
         else:
             counts[word] = 1
     return counts
 
-def top_words(counts, n):
-    pairs = []
-    for word in counts:
-        pairs.append((word, counts[word]))
-    pairs.sort(key=lambda pair: pair[1], reverse=True)
-    return pairs[:n]
+def print_top(text):
+    counts = count_words(text)
+    ranking = sorted(counts.items(), key=lambda pair: pair[1], reverse=True)
+    print(f"서로 다른 단어 수: {len(counts)}")
+    for word, freq in ranking[:3]:
+        print(f"{word}: {freq}회")
 
-sentence = "the cat and the dog and the bird. The cat ran, the dog ran!"
-
-cleaned = clean_text(sentence)
-counts = count_words(cleaned)
-ranking = top_words(counts, 3)
-
-print("== 단어 빈도 분석 ==")
-print(f"전체 단어 수: {len(cleaned.split())}")
-print(f"서로 다른 단어 수: {len(counts)}")
-print("가장 많이 나온 단어 3개:")
-for rank, pair in enumerate(ranking, start=1):
-    word, freq = pair
-    print(f"{rank}위: {word} ({freq}회)")
+sentence = "the cat and the dog and the bird the cat the dog"
+print_top(sentence)

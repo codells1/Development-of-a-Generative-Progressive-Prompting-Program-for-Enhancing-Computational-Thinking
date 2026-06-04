@@ -35,11 +35,13 @@ SYSTEM_CODE = (
     "너는 중·고등학생의 '코드 읽기' 학습용 파이썬 예제를 만드는 출제자다.\n"
     "규칙:\n"
     "1. 외부 입력 없이 그대로 실행되는 단일 완결 프로그램 1개. 데이터는 코드 안에 고정, input() 금지.\n"
-    "2. 길이 약 30~50줄, 함수 3~5개. 변수·함수 이름은 의미가 드러나게.\n"
-    "3. 코드에는 (a)구분되는 함수 2개 이상, (b)반복문, (c)함수로 세부를 감춘 부분, "
+    "2. 길이 최대 20줄(권장 12~18줄), 함수 1~2개. 20줄을 절대 넘기지 마라. "
+    "분해·통합 문항을 위해 함수 2개를 권장한다. 변수·함수 이름은 의미가 드러나게.\n"
+    "3. 권장 형태: 값을 계산하는 함수 1개(반복+조건 포함) + 그 결과를 쓰는 함수 1개(출력/판정).\n"
+    "4. 코드에는 (a)함수 또는 처리 단계 2개 이상, (b)반복문, (c)함수로 세부를 감춘 부분, "
     "(d)조건 분기, (e)부분이 합쳐져 하나의 목적을 이루는 구조가 모두 있어야 한다.\n"
-    "4. 아래 참고 예시가 있다면 구조·스타일만 본뜨고 그대로 복사하지 마라.\n"
-    "5. 출력은 파이썬 코드 블록 하나만. 설명 문장 금지."
+    "5. 아래 참고 예시가 있다면 구조·스타일만 본뜨고 그대로 복사하지 마라.\n"
+    "6. 출력은 파이썬 코드 블록 하나만. 설명 문장·JSON 금지."
 )
 
 SYSTEM_PROBLEM = (
@@ -59,9 +61,11 @@ SYSTEM_PROBLEM = (
     "8. 각 문항의 verification_snippet:\n"
     "   - answer_type이 'computational'이면: 정답 값을 구하는 자족(self-contained) 파이썬 코드를 적는다. "
     "필요한 함수 정의를 모두 그 안에 포함하고, 정답 값 하나만 print 한다. "
-    "input()·파일·네트워크·무한루프 금지. "
-    "출력 형식을 보기의 값 부분과 정확히 맞춘다 (예: 보기 'B. 22000' → print 결과는 '22000').\n"
+    "input()·파일·네트워크·무한루프 금지.\n"
     "   - answer_type이 'conceptual'이면: 빈 문자열 \"\".\n"
+    "   - computational 문항의 보기 값(라벨 뒤 부분)에는 단위·접미사(번, 개, 원, 명, 회 등)나 "
+    "따옴표를 붙이지 말고, verification_snippet의 print 출력과 글자 그대로 정확히 같게 만든다. "
+    "예: 스니펫이 2를 출력하면 보기는 'B. 2번'이 아니라 'B. 2'.\n"
     "9. 각 문항에 focus_points(1~3개의 한국어 문자열 배열)를 넣는다. "
     "정답을 그대로 적지 말고 학생이 풀이를 떠올리는 '생각의 단서'(예: 살펴봐야 할 코드 영역, 추적할 변수, 호출 흐름)로 적는다.\n\n"
     'JSON 형식:\n'
@@ -75,6 +79,56 @@ SYSTEM_PROBLEM = (
     '  {"ct_skill": "통합", ...}\n'
     ']}'
 )
+
+# Stage 2 구조화 출력 강제용 JSON Schema (code_reading_generation.md §4).
+# bare json_object가 아니라 json_schema로 넘겨 필드·타입·배열 길이·완결성까지 디코더가 강제한다.
+# (ct_skill 값은 enum으로 제한하되, 순서 분해→통합 강제는 _parse_problem_set이 담당.)
+PROBLEM_SET_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "title":      {"type": "string"},
+        "summary":    {"type": "string"},
+        "difficulty": {"type": "string"},
+        "code":       {"type": "string"},
+        "questions": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "ct_skill":             {"type": "string",
+                                             "enum": ["분해", "패턴인식", "추상화", "알고리즘적사고", "통합"]},
+                    "question":             {"type": "string"},
+                    "options":              {"type": "array", "minItems": 4, "maxItems": 4,
+                                             "items": {"type": "string"},
+                                             "description": "보기 4개('A. ...' 형식). computational 문항은 "
+                                             "각 보기의 값 부분(라벨 뒤)에 단위·접미사(번/개/원/명/회 등)나 따옴표를 "
+                                             "붙이지 말고 verification_snippet의 print 출력과 글자 그대로 같게 한다 "
+                                             "(예: 2를 출력하면 'A. 2', 'A. 2번' 금지)."},
+                    "answer":               {"type": "string", "enum": ["A", "B", "C", "D"]},
+                    "answer_type":          {"type": "string",
+                                             "enum": ["computational", "conceptual"]},
+                    "verification_snippet": {"type": "string"},
+                    "explanation":          {"type": "string"},
+                    "focus_points":         {"type": "array", "minItems": 1, "maxItems": 3,
+                                             "items": {"type": "string"}},
+                },
+                "required": ["ct_skill", "question", "options", "answer", "answer_type",
+                             "verification_snippet", "explanation", "focus_points"],
+            },
+        },
+    },
+    "required": ["title", "summary", "difficulty", "code", "questions"],
+}
+
+PROBLEM_SET_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "problem_set", "strict": True, "schema": PROBLEM_SET_SCHEMA},
+}
+
 
 SYSTEM_CT_ANALYSIS = (
     "You are an educational assessment AI.\n"
@@ -130,16 +184,20 @@ def _extract_from_reasoning(reasoning: str) -> str:
 
 # ── Single Entry Point ─────────────────────────────────────────────
 
-def _generate(messages: list, temperature: float, max_tokens: int = 4096) -> str:
+def _generate(messages: list, temperature: float, max_tokens: int = 4096,
+              response_format: dict = None) -> str:
     """모든 비스트리밍 LLM 호출의 단일 진입점. Lock으로 동시 호출을 직렬화한다."""
+    kwargs = dict(
+        model=MODEL,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=False,
+    )
+    if response_format is not None:
+        kwargs["response_format"] = response_format
     with _llm_lock:
-        resp = _client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=False,
-        )
+        resp = _client.chat.completions.create(**kwargs)
     choice = resp.choices[0]
     content = (choice.message.content or "").strip()
     if not content:
@@ -155,7 +213,8 @@ def call_code_gen(topic: str = "", ctx: str = "", difficulty: str = "") -> str:
     system = SYSTEM_CODE
     if ctx:
         system += f"\n\n[참고 예시]\n{ctx}"
-    user_content = f"난이도: {difficulty} / 주제 힌트: {topic}"
+    # 코드 생성은 추론 없이도 충분하고 가장 느린 단계라 think를 끈다 (Qwen3 /no_think).
+    user_content = f"/no_think 난이도: {difficulty} / 주제 힌트: {topic}"
     return _generate(
         [{"role": "system", "content": system},
          {"role": "user",   "content": user_content}],
@@ -174,6 +233,7 @@ def call_problem_gen(code: str, templates: str = "", difficulty: str = "") -> st
          {"role": "user",   "content": user_content}],
         TEMP_CREATIVE,
         max_tokens=4096,
+        response_format=PROBLEM_SET_RESPONSE_FORMAT,
     )
 
 
@@ -221,24 +281,61 @@ def call_log_analysis(log_text: str) -> str:
 
 # ── 챗봇 (스트리밍, Lock 미적용) ────────────────────────────────────
 
-def build_chat_system(code_context: str = None, current_problem: str = None) -> str:
+def build_chat_system(code_context: str = None, current_problem: str = None,
+                      ct_skill: str = None, focus_points=None) -> str:
     system = SYSTEM_CHAT
     if code_context:
         system += f"\n\n[현재 학습 중인 코드]\n{code_context}"
     if current_problem:
         system += f"\n\n[현재 풀고 있는 문제]\n{current_problem}"
+    if ct_skill:
+        system += (
+            f"\n\n[이 문항이 기르려는 컴퓨팅 사고력 요소] {ct_skill}\n"
+            "유도 질문이 이 요소를 자극하는 방향이 되게 하라."
+        )
+    if focus_points:
+        fp = focus_points if isinstance(focus_points, (list, tuple)) else [focus_points]
+        fp_text = "\n".join(f"- {p}" for p in fp)
+        system += (
+            "\n\n[유도용 핵심 포인트 — 너만 참고하는 비공개 단서]\n"
+            f"{fp_text}\n"
+            "이 단서는 학생에게 그대로 알려주지 말고, 학생이 스스로 이 방향을 떠올리도록 "
+            "유도 질문의 소재로만 써라. 정답·정답 값·정답 라벨, 맞고 틀림 판정은 여전히 절대 말하지 마라."
+        )
     return system
 
 
-def build_trigger_user_message(trigger_type: str) -> str:
+# ct_skill별 '생각해볼 거리' 방향 + 예시. 예시는 모델이 코드에 맞게 변형해 쓰도록 한다.
+_HINT_DIRECTION_BY_SKILL = {
+    "분해":         "코드를 어떤 부분(함수·처리 단계)으로 나눠볼지 떠올리게 하라. "
+                    "예: \"이 코드를 어떤 부분들로 나눠볼까?\"",
+    "패턴인식":     "반복되며 규칙적으로 일어나는 동작에 주목하게 하라. "
+                    "예: \"여기서 반복되는 동작에는 어떤 규칙이 있을까?\"",
+    "추상화":       "함수가 어떤 구체적 과정을 감추고 무엇을 대표하는지 떠올리게 하라. "
+                    "예: \"이 함수는 복잡한 과정을 어떤 한 가지 일로 묶어 감추고 있을까?\"",
+    "알고리즘적사고": "입력을 따라가며 변수·실행 흐름이 어떻게 바뀌는지 추적하게 하라. "
+                    "예: \"이 입력을 넣으면 변수가 어떻게 바뀌는지 한 줄씩 따라가 볼까?\"",
+    "통합":         "부분들이 합쳐져 전체가 무엇을 이루는지 생각하게 하라. "
+                    "예: \"각 함수가 합쳐져 무엇을 만드는 것 같아?\"",
+}
+
+
+def build_trigger_user_message(trigger_type: str, ct_skill: str = None) -> str:
     """챗봇이 먼저 말하도록 만드는 유사-유저 메시지. 학생 발화로 기록하지 않는다."""
     if trigger_type == "hint":
-        return (
+        msg = (
             "[학생 행동: 힌트 버튼 클릭]\n"
             "학생이 현재 문제에 대한 힌트를 요청했다.\n"
-            "정답·정답 라벨을 절대 말하지 말고, 학생이 스스로 답을 찾도록 돕는 "
-            "소크라테스식 유도 질문 한 개만 한국어로 던져라. 2~3문장 이내."
         )
+        direction = _HINT_DIRECTION_BY_SKILL.get(ct_skill or "")
+        if direction:
+            msg += f"이 문항의 컴퓨팅 사고력 요소는 '{ct_skill}'이다. {direction}\n"
+        msg += (
+            "정답·정답 라벨을 절대 말하지 말고, 위 방향에 맞는 '생각해볼 거리'를 "
+            "소크라테스식 유도 질문 한 개로만 한국어로 던져라. 2~3문장 이내. "
+            "예시 문장을 그대로 베끼지 말고 지금 코드·문제에 맞게 새로 만들어라."
+        )
+        return msg
     if trigger_type == "explain":
         return (
             "[학생 행동: 힌트 없이 정답을 맞춤]\n"

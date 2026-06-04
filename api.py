@@ -5,6 +5,7 @@ import re
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 import rag as rag_store
 import llm
@@ -35,6 +36,10 @@ CT_SKILLS = ("분해", "패턴인식", "추상화", "알고리즘적사고")
 PROBLEM_CT_SKILLS = ("분해", "패턴인식", "추상화", "알고리즘적사고", "통합")
 
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback.json")
+
+# 생성된 문항 세트(focus_points 등 내부 필드 포함)를 session_id로 서버에만 보관한다.
+# 챗봇이 유도 방향을 잡을 때 여기서 ct_skill·focus_points를 읽는다. 학생에겐 절대 안 나간다.
+PROBLEM_SETS_FILE = os.path.join(os.path.dirname(__file__), "problem_sets.json")
 
 
 def strip_fences(text: str) -> str:
@@ -173,14 +178,30 @@ def _option_value(option_text: str, label: str) -> str:
 
 
 def _run_verification_snippet(snippet: str) -> str:
-    """별도 subprocess로 스니펫 실행. stdout.strip() 반환. 실패/타임아웃은 raise."""
-    result = subprocess.run(
-        [sys.executable, "-c", snippet],
-        capture_output=True,
-        text=True,
-        timeout=VERIFY_TIMEOUT_SEC,
-        encoding="utf-8",
+    """
+    verification_snippet을 임시 .py 파일로 저장해 별도 subprocess로 실행한다.
+    타임아웃 VERIFY_TIMEOUT_SEC초, stdout.strip() 반환. 실패/타임아웃은 raise.
+    (subprocess.run이 타임아웃 시 자식을 종료한 뒤 TimeoutExpired를 올린다.)
+    """
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".py", delete=False, encoding="utf-8"
     )
+    try:
+        tmp.write(snippet)
+        tmp.close()
+        result = subprocess.run(
+            [sys.executable, tmp.name],
+            capture_output=True,
+            text=True,
+            timeout=VERIFY_TIMEOUT_SEC,
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass  # 타임아웃으로 자식이 잡고 있는 등 드문 경우 — 임시파일만 남고 무해
     if result.returncode != 0:
         raise RuntimeError(f"실행 오류: {result.stderr.strip()[:200]}")
     return (result.stdout or "").strip()
@@ -294,6 +315,47 @@ def _student_safe_questions(questions: list) -> list:
     ]
 
 
+def _save_problem_set(session_id: str, questions: list) -> None:
+    """문항 세트(focus_points 포함 full 버전)를 session_id로 서버에 보관한다.
+    학생 전송본과 같은 순서·길이(검증/스킵 반영 후)이므로 problem_index가 그대로 맞는다."""
+    if not session_id:
+        return
+    try:
+        store = {}
+        if os.path.exists(PROBLEM_SETS_FILE):
+            with open(PROBLEM_SETS_FILE, "r", encoding="utf-8") as f:
+                store = json.load(f)
+        store[session_id] = {
+            "stored_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "questions": questions,
+        }
+        with open(PROBLEM_SETS_FILE, "w", encoding="utf-8") as f:
+            json.dump(store, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"문항 세트 저장 오류: {e}")
+
+
+def _get_stored_question(session_id: str, index) -> dict | None:
+    """보관된 세트에서 index번째 문항(full)을 반환한다. 없으면 None."""
+    if not session_id or index is None:
+        return None
+    try:
+        index = int(index)
+    except (ValueError, TypeError):
+        return None
+    try:
+        if not os.path.exists(PROBLEM_SETS_FILE):
+            return None
+        with open(PROBLEM_SETS_FILE, "r", encoding="utf-8") as f:
+            store = json.load(f)
+        questions = store.get(session_id, {}).get("questions", [])
+        if 0 <= index < len(questions):
+            return questions[index]
+    except Exception as e:
+        print(f"문항 세트 조회 오류: {e}")
+    return None
+
+
 @api.route("/status", methods=["GET"])
 def status():
     try:
@@ -324,6 +386,7 @@ def generate_problem():
     if not code:
         return jsonify({"error": "code 필드 필요"}), 400
     difficulty = (data.get("difficulty") or "").strip()
+    session_id = (data.get("session_id") or "").strip()
 
     # 5유형별로 RAG 가이드를 따로 검색해 합친다 (한 쿼리에 5유형 섞으면 편향됨)
     template_parts = []
@@ -349,6 +412,7 @@ def generate_problem():
 
     # 문항별 검증 + 실패시 단일 문항 재생성/스킵
     final_questions = _process_questions(parsed["questions"], code, templates)
+    _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
     return jsonify({
         "title":     parsed["title"],
         "summary":   parsed["summary"],
@@ -402,8 +466,10 @@ def session_start():
 
     # 문항별 검증 + 실패시 단일 문항 재생성/스킵
     final_questions = _process_questions(parsed["questions"], code, templates)
+    session_id = _gen_session_id()
+    _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
     return jsonify({
-        "session_id": _gen_session_id(),
+        "session_id": session_id,
         "title":      parsed["title"],
         "summary":    parsed["summary"],
         "difficulty": difficulty,
@@ -451,11 +517,22 @@ def chat():
     session_id = data.get("session_id", "unknown")
     code_context = data.get("code_context")
     current_problem = data.get("current_problem")
+    problem_index = data.get("problem_index")
 
-    system_prompt = llm.build_chat_system(code_context, current_problem)
+    # ct_skill·focus_points는 서버 보관 세트에서만 가져온다 (클라이언트발 focus_points 불신 — 노출 차단).
+    ct_skill = data.get("ct_skill")   # 비민감 메타. 보관 세트가 있으면 그 값으로 덮어씀.
+    focus_points = None
+    stored_q = _get_stored_question(session_id, problem_index)
+    if stored_q:
+        ct_skill = stored_q.get("ct_skill") or ct_skill
+        focus_points = stored_q.get("focus_points")
+
+    system_prompt = llm.build_chat_system(
+        code_context, current_problem, ct_skill, focus_points
+    )
 
     if trigger in ("hint", "explain"):
-        trigger_msg = llm.build_trigger_user_message(trigger)
+        trigger_msg = llm.build_trigger_user_message(trigger, ct_skill)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": trigger_msg},

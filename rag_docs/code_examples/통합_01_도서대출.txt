@@ -1,56 +1,22 @@
-# 주제: 도서 대출 관리 시스템 (통합/융합)
+# 주제: 도서 대출 현황 (통합/융합)
 # 난이도: 중3~고1
 # 사용 개념: 딕셔너리, 리스트, 함수, 조건문, 반복문
-# 통합 포인트: 도서 검색·대출·반납·현황 출력의 네 기능이 모여 하나의 대출 시스템을 이룬다
+# 통합 포인트: 재고 집계 함수와 현황 출력 함수가 모여 대출 가능 현황을 보여준다
 
-def find_book(library, title):
+def count_available(library):
+    available = 0
     for book in library:
-        if book["title"] == title:
-            return book
-    return None
-
-def checkout(library, title):
-    book = find_book(library, title)
-    if book is None:
-        return f"'{title}'은(는) 목록에 없습니다."
-    if book["available"] <= 0:
-        return f"'{title}'은(는) 모두 대출 중입니다."
-    book["available"] -= 1
-    return f"'{title}' 대출 완료. 남은 수량 {book['available']}권."
-
-def give_back(library, title):
-    book = find_book(library, title)
-    if book is None:
-        return f"'{title}'은(는) 목록에 없습니다."
-    book["available"] += 1
-    return f"'{title}' 반납 완료. 현재 수량 {book['available']}권."
+        if book["stock"] > 0:
+            available += 1
+    return available
 
 def print_status(library):
-    print("== 도서 현황 ==")
+    print(f"대출 가능: {count_available(library)}종 / 전체 {len(library)}종")
     for book in library:
-        state = "대출가능" if book["available"] > 0 else "대출불가"
-        print(f"{book['title']}: {book['available']}/{book['total']}권 ({state})")
-    print("-" * 25)
+        state = "가능" if book["stock"] > 0 else "불가"
+        print(f"{book['title']}: {book['stock']}권 ({state})")
 
-library = [
-    {"title": "파이썬 입문", "total": 3, "available": 3},
-    {"title": "알고리즘 기초", "total": 2, "available": 2},
-    {"title": "자료구조", "total": 1, "available": 1},
-]
-
-requests = [
-    ("대출", "파이썬 입문"),
-    ("대출", "자료구조"),
-    ("대출", "자료구조"),
-    ("반납", "파이썬 입문"),
-    ("대출", "없는책"),
-]
-
-for action, title in requests:
-    if action == "대출":
-        print(checkout(library, title))
-    elif action == "반납":
-        print(give_back(library, title))
-
-print()
+library = [{"title": "파이썬 입문", "stock": 3},
+           {"title": "알고리즘 기초", "stock": 0},
+           {"title": "자료구조", "stock": 1}]
 print_status(library)
