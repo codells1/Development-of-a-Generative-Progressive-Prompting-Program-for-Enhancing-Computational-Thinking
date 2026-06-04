@@ -406,7 +406,7 @@ async function triggerChatbot(triggerType) {
             bubble.textContent = fullReply;
             document.getElementById("chat-messages").scrollTop = 9999;
         });
-        fullReply = fullReply.trim();
+        fullReply = cleanReply(fullReply);
         if (fullReply) {
             bubble.textContent = fullReply;
             chatHistory.push({ role: "assistant", content: fullReply });
@@ -432,15 +432,23 @@ async function sendMessage() {
     if (!message) return;
 
     input.value = "";
-    input.disabled = true;
     appendBubble("user", message);
     chatHistory.push({ role: "user", content: message });
 
     // 사용자 답글이 들어왔으니 잠갔던 문제 풀이 섹터 즉시 해제
+    const wasExplain = (awaitingFor === "explain");
     if (awaitingFor === "hint") setAnswerInputEnabled(true);
     else if (awaitingFor === "explain") setNextProblemEnabled(true);
     awaitingFor = null;
 
+    // 힌트 없이 정답 → '어떻게 풀었어?'에 대한 학생 답변.
+    // 이 답변은 기록만 하고 챗봇은 추가로 응답하지 않는다(대화 종료).
+    if (wasExplain) {
+        input.focus();
+        return;
+    }
+
+    input.disabled = true;
     const bubble = appendBubble("assistant", "");
     let fullReply = "";
     try {
@@ -460,7 +468,7 @@ async function sendMessage() {
             bubble.textContent = fullReply;
             document.getElementById("chat-messages").scrollTop = 9999;
         });
-        fullReply = fullReply.trim();
+        fullReply = cleanReply(fullReply);
         if (fullReply) {
             bubble.textContent = fullReply;
             chatHistory.push({ role: "assistant", content: fullReply });
@@ -519,6 +527,19 @@ function setAnswerInputEnabled(enabled) {
 function setNextProblemEnabled(enabled) {
     const btn = document.getElementById("next-problem-btn");
     if (btn) btn.disabled = !enabled;
+}
+
+// 모델이 답변 전체를 따옴표로 감싼 경우 양끝 따옴표를 제거하고 공백을 정리한다.
+function cleanReply(text) {
+    let t = (text || "").trim();
+    if (t.length >= 2) {
+        const a = t[0], b = t[t.length - 1];
+        const pairs = [['"', '"'], ["'", "'"], ["“", "”"], ["‘", "’"]];
+        if (pairs.some(([o, c]) => a === o && b === c)) {
+            t = t.slice(1, -1).trim();
+        }
+    }
+    return t;
 }
 
 function escapeHtml(str) {
