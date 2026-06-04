@@ -276,16 +276,73 @@ function showEvalResult(data, errorMsg = null) {
         document.getElementById("ct-score").textContent = "?";
         document.getElementById("ct-feedback").textContent = errorMsg || "평가 중 오류가 발생했습니다.";
         document.getElementById("ct-score-ring").className = "score-ring";
+        renderRubric(null);
     } else {
         const ctScore = parseInt(data.ct_score) || 0;
         document.getElementById("ct-score").textContent = ctScore;
         document.getElementById("ct-feedback").textContent = data.ct_feedback || "";
         document.getElementById("ct-score-ring").className = "score-ring " + scoreClass(ctScore);
+        renderRubric(data);
     }
 
     document.querySelector(".eval-next-btn").textContent = "새 코드 →";
 
     overlay.classList.remove("hidden");
+}
+
+// 루브릭 지표별(1~3·N/A) 결과를 결과창에 표시. 백엔드 ct_scores/self_reg/weak_ct 사용.
+// 고정 표시 순서(루브릭 순서). JSON 키 정렬 순서에 의존하지 않는다.
+const RUBRIC_ORDER = ["문제분해", "용어사용", "추상화", "실행흐름", "자료표현", "동작파악", "패턴인식"];
+const RUBRIC_LABELS = {
+    문제분해: "문제 분해", 용어사용: "용어 사용", 추상화: "추상화",
+    실행흐름: "실행 흐름", 자료표현: "자료 표현", 동작파악: "동작 파악",
+    패턴인식: "패턴 인식", 자기해결: "자기 해결",
+};
+
+function renderRubric(data) {
+    const box = document.getElementById("ct-rubric");
+    box.innerHTML = "";
+    if (!data) {
+        box.innerHTML = `<p class="rubric-empty">평가 결과를 불러오지 못했습니다.</p>`;
+        return;
+    }
+    const scores = data.ct_scores || {};
+    const keys = RUBRIC_ORDER.filter(k => k in scores);
+    if (!keys.length) {
+        box.innerHTML = `<p class="rubric-empty">표시할 지표 점수가 없습니다.</p>`;
+        return;
+    }
+
+    keys.forEach((key) => {
+        box.appendChild(rubricRow(RUBRIC_LABELS[key] || key, scores[key], key === data.weak_ct));
+    });
+
+    if (data.self_reg !== undefined && data.self_reg !== null) {
+        const divider = document.createElement("div");
+        divider.className = "rubric-divider";
+        divider.textContent = "메타인지 (CT 총점과 별도 집계)";
+        box.appendChild(divider);
+        box.appendChild(rubricRow(RUBRIC_LABELS["자기해결"], data.self_reg, false));
+    }
+}
+
+function rubricRow(label, val, isWeak) {
+    const row = document.createElement("div");
+    row.className = "rubric-row" + (isWeak ? " weak" : "");
+
+    const name = document.createElement("span");
+    name.className = "rubric-name";
+    name.textContent = isWeak ? `${label} · 보완 필요` : label;
+
+    const GRADE_TEXT = { 1: "하", 2: "중", 3: "상" };
+    const isLevel = (val === 1 || val === 2 || val === 3);
+    const chip = document.createElement("span");
+    chip.className = "rubric-chip " + (isLevel ? "lv" + val : "na");
+    chip.textContent = isLevel ? GRADE_TEXT[val] : "N/A";
+
+    row.appendChild(name);
+    row.appendChild(chip);
+    return row;
 }
 
 function scoreClass(score) {

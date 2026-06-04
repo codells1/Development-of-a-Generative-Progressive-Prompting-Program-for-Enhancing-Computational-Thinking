@@ -13,6 +13,8 @@ import llm
 VERIFY_TIMEOUT_SEC    = 5      # verification_snippet 실행 타임아웃
 PROBLEM_RETRY_LIMIT   = 3      # 세트 파싱·구조 검증 실패 시 전체 재생성 최대 횟수
 VERIFY_RETRY_LIMIT    = 3      # spec §3.4 — 검증 실패한 그 문항만 재생성 최대 횟수
+CHAT_LOG_CHAR_BUDGET  = 3500   # CT 평가 시 대화 로그 글자수 상한 (모델 컨텍스트 초과 방지)
+MAX_CHAT_HISTORY      = 16     # 챗봇 호출 시 모델에 넣는 직전 대화 최대 메시지 수 (컨텍스트 초과 방지)
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -91,16 +93,23 @@ def _extract_json(raw: str) -> dict:
     return json.loads(_slice_first_json(raw), strict=False)
 
 
+_GRADE_MAP = {"상": 3, "중": 2, "하": 1, "우수": 3, "보통": 2, "미흡": 1}
+
+
 def _norm_rubric_score(value):
-    """루브릭 점수 1칸을 정규화한다. 1~3 정수면 클램핑해 반환, N/A·무효값이면 None."""
+    """루브릭 점수 1칸을 정규화한다. 상/중/하·우수/보통/미흡 또는 1~3 정수 → 1~3,
+    N/A·무효값이면 None."""
     if value is None:
         return None
     if isinstance(value, str):
-        s = value.strip().upper()
-        if s in ("", "N/A", "NA", "NONE", "-"):
+        s = value.strip()
+        if s in _GRADE_MAP:
+            return _GRADE_MAP[s]
+        su = s.upper()
+        if su in ("", "N/A", "NA", "NONE", "-"):
             return None
         try:
-            value = int(float(s))
+            value = int(float(su))
         except ValueError:
             return None
     try:
@@ -692,7 +701,9 @@ def chat():
         ]
         user_message_for_log = f"[{trigger} 트리거]"
     else:
-        messages = [{"role": "system", "content": system_prompt}] + history
+        # 대화가 길어지면 모델 컨텍스트를 초과하므로 최근 메시지만 모델에 넣는다.
+        recent = history[-MAX_CHAT_HISTORY:]
+        messages = [{"role": "system", "content": system_prompt}] + recent
         user_message_for_log = history[-1]["content"] if history else ""
 
     visible_parts = []
@@ -750,19 +761,30 @@ def evaluate():
     chat_history = data.get("chat_history", [])
     session_id  = data.get("session_id", "unknown")
 
-    # 대화 로그 직렬화 — 분석 대상 자료, messages 맥락 아님
-    qa_pairs = ""
-    for i, (p, a) in enumerate(zip(problems, answers), 1):
-        qa_pairs += f"\n{i}. [문제] {p}\n   [학생선택] {a}\n"
-    chat_text = ""
+    # 대화 로그 직렬화 — 분석 대상 자료, messages 맥락 아님.
+    # 루브릭은 '학생 발화'만 채점한다. 단 AI 발화도 대화 맥락(어떤 힌트·질문에 학생이
+    # 어떻게 반응했는지)을 보려면 필요하므로, 줄마다 역할을 명시해 함께 넣되
+    # '학생' 줄만 채점 대상, 'AI' 줄은 맥락(채점 제외)임을 라벨로 분명히 한다.
+    # 문제/답안 덤프는 채점에 불필요하므로 넣지 않는다(토큰 절약).
+    lines = []
     for msg in chat_history:
-        role = "학생" if msg["role"] == "user" else "AI"
-        chat_text += f"\n{role}: {msg['content']}"
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if msg.get("role") == "user":
+            lines.append(f"[학생·채점대상] {content}")
+        else:
+            lines.append(f"[AI·맥락(채점제외)] {content}")
+    chat_text = "\n".join(lines)
+    if len(chat_text) > CHAT_LOG_CHAR_BUDGET:
+        # 뒤쪽(최근)을 보존하고 앞부분을 잘라낸다 — 세션의 전형적 수준 평정에 최근이 대표적.
+        chat_text = "…(앞부분 생략)…\n" + chat_text[-CHAT_LOG_CHAR_BUDGET:]
     log_text = (
         f"학습 주제: {topic}\n\n"
-        f"코드 예제:\n{code}\n\n"
-        f"문제와 학생 답안:{qa_pairs}\n"
-        f"챗봇 대화:{chat_text if chat_text else ' (없음)'}"
+        f"학생이 읽은 코드:\n{code}\n\n"
+        "챗봇 대화 — '[학생·채점대상]' 줄만 컴퓨팅 사고력 채점의 근거로 삼아라. "
+        "'[AI·맥락(채점제외)]' 줄은 대화 맥락 파악용일 뿐, 그 내용으로 점수를 매기지 마라:\n"
+        f"{chat_text if chat_text else '(대화 없음)'}"
     )
 
     try:
