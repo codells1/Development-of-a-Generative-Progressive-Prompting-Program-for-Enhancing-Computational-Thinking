@@ -1,86 +1,39 @@
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 import json
+import random
 import re
 import os
-import subprocess
-import sys
 from datetime import datetime
 import rag as rag_store
 import llm
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
-# 컨텍스트 초과 방지: LLM에 전달하는 대화 히스토리 최대 메시지 수 (user+assistant 합산)
-# 줄이면 컨텍스트 안전, 늘리면 더 긴 맥락 유지. 기본 16 = 약 8턴
-MAX_HISTORY_MSGS = 16
-
 CONVERSATIONS_FILE = os.path.join(os.path.dirname(__file__), "conversations.json")
 
-STAGE_MAP = {
-    0: "변수·연산·조건",
-    1: "반복·리스트",
-    2: "함수",
-    3: "알고리즘",
-}
+# 코드 생성용 주제 힌트 (stage 키워드 아님, 개념 키워드). RAG 검색 쿼리 + LLM 주제 힌트로 사용.
+CODE_TOPIC_HINTS = (
+    "리스트 합계와 평균",
+    "딕셔너리 빈도 집계",
+    "조건별 분류 처리",
+    "할인·요금 계산",
+    "단어·문자열 분석",
+    "성적·점수 채점",
+    "재고·수량 관리",
+    "예산·가계부 요약",
+)
 
-FUSION_TOPIC = "융합"
-
-CT_SKILLS     = ("분해", "패턴인식", "추상화", "알고리즘적사고")
-# CT 루브릭 7지표 (각 1~3점: 미흡/보통/우수) — SYSTEM_PROMPT_EVAL과 키가 일치해야 함
-PROMPT_SKILLS = ("문제분해", "용어사용", "추상화", "실행흐름", "자료표현", "동작확인", "자기해결")
+CT_SKILLS = ("분해", "패턴인식", "추상화", "알고리즘적사고")
 
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback.json")
 
 CT_MAP = {
-    0: {"ct_skill": "분해",           "difficulty": "매우쉬움"},
-    1: {"ct_skill": "패턴인식",       "difficulty": "쉬움"},
-    2: {"ct_skill": "추상화",         "difficulty": "보통"},
-    3: {"ct_skill": "알고리즘적사고", "difficulty": "어려움"},
-    4: {"ct_skill": "통합",           "difficulty": "매우어려움"},
+    0: {"ct_skill": "분해"},
+    1: {"ct_skill": "패턴인식"},
+    2: {"ct_skill": "추상화"},
+    3: {"ct_skill": "알고리즘적사고"},
+    4: {"ct_skill": "통합"},
 }
-
-
-def _iter_stream_content(stream):
-    """스트리밍에서 Qwen3 <think>...</think> 블록을 제거하며 텍스트를 산출한다."""
-    buffer = ""
-    in_think = False
-    OPEN_TAG, CLOSE_TAG = "<think>", "</think>"
-
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content or ""
-        if not delta:
-            continue
-        buffer += delta
-
-        while buffer:
-            if in_think:
-                idx = buffer.find(CLOSE_TAG)
-                if idx == -1:
-                    buffer = ""
-                    break
-                buffer = buffer[idx + len(CLOSE_TAG):]
-                in_think = False
-            else:
-                idx = buffer.find(OPEN_TAG)
-                if idx == -1:
-                    # 버퍼 끝에 태그가 시작될 수 있는 경우 보류
-                    safe = len(buffer)
-                    for i in range(1, len(OPEN_TAG)):
-                        if buffer.endswith(OPEN_TAG[:i]):
-                            safe = len(buffer) - i
-                            break
-                    if safe > 0:
-                        yield buffer[:safe]
-                    buffer = buffer[safe:]
-                    break
-                else:
-                    if idx > 0:
-                        yield buffer[:idx]
-                    buffer = buffer[idx + len(OPEN_TAG):]
-                    in_think = True
-
-    if buffer and not in_think:
-        yield buffer
 
 
 def strip_fences(text: str) -> str:
@@ -97,16 +50,8 @@ def _extract_json(raw: str) -> dict:
     return json.loads(m.group())
 
 
-def _safe_int(value, default: int = 1) -> int:
-    """LLM이 null·문자열·소수를 줘도 안전하게 정수로 변환한다."""
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return default
-
-
-def save_feedback(session_id: str, topic: str, ct: dict, prompt: dict) -> None:
-    """CT 4요소 점수 + CT 루브릭 7지표 점수를 feedback.json에 누적 저장한다."""
+def save_feedback(session_id: str, topic: str, ct: dict) -> None:
+    """CT 점수를 feedback.json에 누적 저장한다."""
     try:
         records = []
         if os.path.exists(FEEDBACK_FILE):
@@ -115,21 +60,31 @@ def save_feedback(session_id: str, topic: str, ct: dict, prompt: dict) -> None:
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         records.append({
-            "session_id":      session_id,
-            "timestamp":       now,
-            "topic":           topic,
-            "ct_scores":       {k: ct.get(k, 1) for k in CT_SKILLS},
-            "weak_ct":         ct.get("weak_ct", ""),
-            "ct_feedback":     ct.get("feedback", ""),
-            "prompt_scores":   {k: prompt.get(k, 1) for k in PROMPT_SKILLS},
-            "prompt_score":    prompt.get("overall", 0),
-            "prompt_feedback": prompt.get("feedback", ""),
+            "session_id":  session_id,
+            "timestamp":   now,
+            "topic":       topic,
+            "ct_scores":   {k: ct.get(k, 1) for k in CT_SKILLS},
+            "weak_ct":     ct.get("weak_ct", ""),
+            "ct_feedback": ct.get("feedback", ""),
         })
 
         with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"피드백 저장 오류: {e}")
+
+
+def _latest_feedback(session_id: str) -> dict | None:
+    """주어진 session_id의 가장 최근 피드백을 반환한다. 없으면 None."""
+    if not os.path.exists(FEEDBACK_FILE):
+        return None
+    try:
+        with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
+            records = json.load(f)
+        matches = [r for r in records if r.get("session_id") == session_id]
+        return matches[-1] if matches else None
+    except Exception:
+        return None
 
 
 def _parse_mcq(raw: str) -> dict:
@@ -148,54 +103,6 @@ def _parse_mcq(raw: str) -> dict:
     return data
 
 
-def _run_verification(problem_data: dict) -> tuple:
-    """
-    verification_code를 subprocess로 실제 실행한다.
-    반환: (matched_label, actual_output)
-    - matched_label : 보기와 일치한 라벨 문자열, 없으면 None
-    - actual_output : 실행 출력값 문자열, 실행 실패·빈 출력이면 None
-    """
-    code = (problem_data.get("verification_code") or "").strip()
-    if not code:
-        return None, None
-
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
-
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True, timeout=5,
-            encoding="utf-8", errors="replace",
-            env=env,
-        )
-    except Exception:
-        return None, None
-
-    if result.returncode != 0:
-        return None, None
-
-    actual = (result.stdout or "").strip()
-    if not actual:
-        return None, None
-
-    # 보기와 대조 (문자열 일치 → float 근사 순)
-    for opt in problem_data.get("options", []):
-        if ". " not in opt:
-            continue
-        label, text = opt.split(". ", 1)
-        text = text.strip()
-        if text == actual:
-            return label, actual
-        try:
-            if abs(float(text) - float(actual)) < 1e-6:
-                return label, actual
-        except ValueError:
-            pass
-
-    return None, actual  # 실행은 성공했지만 일치 보기 없음
-
-
 @api.route("/status", methods=["GET"])
 def status():
     try:
@@ -207,24 +114,13 @@ def status():
 
 @api.route("/generate-code", methods=["POST"])
 def generate_code():
-    data = request.get_json()
-    is_fusion = data.get("is_fusion", False)
-    stage = data.get("stage", 0)
-
-    if is_fusion:
-        topic = FUSION_TOPIC
-        ctx = rag_store.retrieve("code_examples", topic)
-        try:
-            raw = llm.call_code_gen_fusion(ctx)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 503
-    else:
-        topic = STAGE_MAP.get(int(stage), "변수·연산·조건")
-        ctx = rag_store.retrieve("code_examples", topic)
-        try:
-            raw = llm.call_code_gen(topic, ctx)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 503
+    data = request.get_json(silent=True) or {}
+    topic = (data.get("topic_hint") or "").strip() or random.choice(CODE_TOPIC_HINTS)
+    ctx = rag_store.retrieve("code_examples", topic)
+    try:
+        raw = llm.call_code_gen(topic=topic, ctx=ctx)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 503
 
     return jsonify({"code": strip_fences(raw), "topic": topic})
 
@@ -236,9 +132,9 @@ def generate_problem():
     problem_index = data.get("problem_index", 0)
     previous = data.get("previous_problems", [])
 
-    ct_info   = CT_MAP[min(problem_index, 4)]
-    ct_skill  = ct_info["ct_skill"]
-    difficulty = ct_info["difficulty"]
+    ct_info    = CT_MAP[min(problem_index, 4)]
+    ct_skill   = ct_info["ct_skill"]
+    difficulty = ""
 
     templates = rag_store.retrieve("problem_templates", f"{ct_skill} {difficulty} {code[:300]}")
 
@@ -247,31 +143,6 @@ def generate_problem():
         try:
             raw = llm.call_problem_gen(code, ct_skill, difficulty, templates, previous, problem_index)
             problem_data = _parse_mcq(raw)
-
-            # 실제 코드 실행으로 정답 확정
-            matched_label, actual_output = _run_verification(problem_data)
-            if matched_label:
-                # 보기에 정답값이 있고 라벨도 확정됨
-                problem_data["answer"] = matched_label
-            elif actual_output:
-                # 실행은 성공했지만 어느 보기와도 안 맞음
-                # → LLM 정답 보기가 수치형일 때만 교정 (개념형 질문은 LLM 답 유지)
-                llm_label = problem_data.get("answer", "A")
-                options = problem_data.get("options", [])
-                for i, opt in enumerate(options):
-                    if ". " not in opt or opt.split(". ", 1)[0] != llm_label:
-                        continue
-                    opt_text = opt.split(". ", 1)[1].strip()
-                    try:
-                        float(opt_text)          # 수치형 보기인지 확인
-                        options[i] = f"{llm_label}. {actual_output}"
-                    except ValueError:
-                        pass                     # 텍스트형(개념형) → 교정 안 함
-                    break
-
-            # verification_code는 학생에게 노출하지 않음
-            problem_data.pop("verification_code", None)
-
             problem_data["ct_skill"]   = ct_skill
             problem_data["difficulty"] = difficulty
             return jsonify(problem_data)
@@ -307,95 +178,49 @@ def rag_rebuild():
         return jsonify({"error": str(e)}), 503
 
 
-@api.route("/previous-feedback", methods=["GET"])
-def previous_feedback():
-    """feedback.json의 마지막 항목을 반환한다. 없으면 has_previous: false."""
-    if not os.path.exists(FEEDBACK_FILE):
-        return jsonify({"has_previous": False})
-    try:
-        with open(FEEDBACK_FILE, "r", encoding="utf-8") as f:
-            records = json.load(f)
-        if not records:
-            return jsonify({"has_previous": False})
-        last = records[-1]
-        return jsonify({
-            "has_previous": True,
-            "topic":      last.get("topic", ""),
-            "ct_scores":  last.get("ct_scores", {}),
-            "weak_ct":    last.get("weak_ct", ""),
-            "ct_feedback": last.get("ct_feedback", ""),
-        })
-    except Exception:
-        return jsonify({"has_previous": False})
-
-
 @api.route("/chat", methods=["POST"])
 def chat():
+    """
+    챗봇 스트리밍 엔드포인트.
+      - trigger == "hint" / "explain"  : 챗봇이 먼저 말함 (history 무시)
+      - trigger 없음                   : history 기반 일반 응답
+    """
     data = request.get_json()
+    trigger = data.get("trigger")
     history = data.get("messages", [])
     session_id = data.get("session_id", "unknown")
     code_context = data.get("code_context")
     current_problem = data.get("current_problem")
-    weak_ct = data.get("weak_ct")  # Task 3에서 프론트가 전달; 없으면 None → 표준 프롬프트
 
-    # 컨텍스트 초과 방지: 최근 MAX_HISTORY_MSGS개만 유지 (시스템 메시지는 별도)
-    trimmed = history[-MAX_HISTORY_MSGS:] if len(history) > MAX_HISTORY_MSGS else history
-    messages = [{"role": "system", "content": llm.build_chat_system(code_context, current_problem, weak_ct)}] + trimmed
+    system_prompt = llm.build_chat_system(code_context, current_problem)
+
+    if trigger in ("hint", "explain"):
+        trigger_msg = llm.build_trigger_user_message(trigger)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": trigger_msg},
+        ]
+        user_message_for_log = f"[{trigger} 트리거]"
+    else:
+        messages = [{"role": "system", "content": system_prompt}] + history
+        user_message_for_log = history[-1]["content"] if history else ""
+
     full_reply_holder = []
 
     def generate():
         try:
             stream = llm.stream_chatbot(messages)
-            for text in _iter_stream_content(stream):
-                full_reply_holder.append(text)
-                yield f"data: {json.dumps({'delta': text})}\n\n"
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    full_reply_holder.append(delta)
+                    yield f"data: {json.dumps({'delta': delta})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             return
 
         full_reply = "".join(full_reply_holder)
-        user_message = history[-1]["content"] if history else ""  # 원본 history에서 저장
-        save_turn(session_id, user_message, full_reply, code_context)
-        yield f"data: {json.dumps({'done': True})}\n\n"
-
-    return Response(stream_with_context(generate()), mimetype="text/event-stream")
-
-
-@api.route("/chat-nudge", methods=["POST"])
-def chat_nudge():
-    """챗봇 선제 유도 — 오답 시 또는 무입력 시 챗봇이 먼저 소크라테스 질문을 던진다."""
-    data = request.get_json()
-    messages        = data.get("messages", [])
-    session_id      = data.get("session_id", "unknown")
-    code_context    = data.get("code_context")
-    current_problem = data.get("current_problem")
-    weak_ct         = data.get("weak_ct")
-    reason          = data.get("reason", "inactivity")
-
-    # 컨텍스트 초과 방지: 최근 MAX_HISTORY_MSGS개만 유지
-    trimmed = messages[-MAX_HISTORY_MSGS:] if len(messages) > MAX_HISTORY_MSGS else messages
-    system = llm.build_nudge_system(code_context, current_problem, reason, weak_ct)
-    full_messages = [{"role": "system", "content": system}] + trimmed
-
-    # 마지막 메시지가 assistant 또는 없을 때 Qwen3가 응답을 생성하지 않으므로 user 트리거 추가
-    if not full_messages or full_messages[-1].get("role") != "user":
-        full_messages.append({"role": "user", "content": "/no_think"})
-
-    full_reply_holder = []
-
-    def generate():
-        try:
-            stream = llm.stream_chatbot(full_messages)
-            for text in _iter_stream_content(stream):
-                full_reply_holder.append(text)
-                yield f"data: {json.dumps({'delta': text})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-            return
-
-        full_reply = "".join(full_reply_holder)
-        if full_reply:
-            save_turn(session_id, f"[챗봇 유도: {reason}]", full_reply, code_context)
+        save_turn(session_id, user_message_for_log, full_reply, code_context)
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
@@ -428,10 +253,9 @@ def evaluate():
 
     try:
         ct_raw = _extract_json(llm.call_log_analysis(log_text))
-        pr_raw = _extract_json(llm.call_prompt_eval(log_text))
 
         # CT 4요소 점수 정규화 (1~5 클램핑)
-        ct_scores = {k: max(1, min(5, _safe_int(ct_raw.get(k, 1)))) for k in CT_SKILLS}
+        ct_scores = {k: max(1, min(5, int(ct_raw.get(k, 1)))) for k in CT_SKILLS}
 
         # weak_ct 보정: LLM 산출값이 유효 키가 아니면 최솟값 키로 재계산
         weak_ct = ct_raw.get("weak_ct", "")
@@ -441,26 +265,16 @@ def evaluate():
         # 평균(1~5) → 100점 환산 (프론트 현행 호환)
         ct_score = round(sum(ct_scores.values()) / len(ct_scores) * 20)
 
-        # CT 루브릭 7지표 점수 정규화 (1~3 클램핑)
-        prompt_scores = {k: max(1, min(3, _safe_int(pr_raw.get(k, 1)))) for k in PROMPT_SKILLS}
-        # 평균(1~3) → 100점 환산 (우수3=100, 보통2≈67, 미흡1≈33)
-        prompt_score  = round(sum(prompt_scores.values()) / len(prompt_scores) / 3 * 100)
-
-        # feedback.json 저장
         save_feedback(
             session_id, topic,
             {**ct_scores, "weak_ct": weak_ct, "feedback": ct_raw.get("feedback", "")},
-            {**prompt_scores, "overall": prompt_score, "feedback": pr_raw.get("feedback", "")},
         )
 
         return jsonify({
-            "ct_scores":       ct_scores,          # 4요소 각 점수 (Task 7에서 UI 활용)
-            "weak_ct":         weak_ct,
-            "ct_score":        ct_score,            # 현 프론트용 단일 점수
-            "ct_feedback":     ct_raw.get("feedback", ""),
-            "prompt_scores":   prompt_scores,       # CT 루브릭 7지표 각 점수
-            "prompt_score":    prompt_score,
-            "prompt_feedback": pr_raw.get("feedback", ""),
+            "ct_scores":   ct_scores,
+            "weak_ct":     weak_ct,
+            "ct_score":    ct_score,
+            "ct_feedback": ct_raw.get("feedback", ""),
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 503

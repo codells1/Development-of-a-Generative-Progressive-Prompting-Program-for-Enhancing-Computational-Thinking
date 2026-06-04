@@ -8,7 +8,6 @@ body {
     background: #f0f2f5;
     color: #1a1a2e;
     font-family: 'Segoe UI', sans-serif;
-    min-height: 100vh;
     height: 100vh;
     overflow: hidden;
 }
@@ -16,29 +15,15 @@ body {
 .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr 1fr;      /* 문제 : 챗봇 = 1:1 */
+    grid-template-rows: 1fr 2fr;
     height: 100vh;
     gap: 8px;
     padding: 8px;
     background: #dde1e8;
 }
 
-/* 코드: 왼쪽 열 전체 높이 / 문제: 오른쪽 위 / 챗봇: 오른쪽 아래(1:1) */
 .code-panel {
     grid-row: 1 / 3;
-    grid-column: 1 / 2;
-}
-
-.problem-panel {
-    grid-row: 1 / 2;
-    grid-column: 2 / 3;
-    min-height: 0;
-}
-
-.chat-panel {
-    grid-row: 2 / 3;
-    grid-column: 2 / 3;
-    min-height: 0;
 }
 
 .quadrant {
@@ -48,15 +33,12 @@ body {
     border-radius: 10px;
     overflow: hidden;
     box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-    min-height: 0;
-    min-width: 0;
 }
 
 .quadrant-header {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 8px 10px;
+    gap: 10px;
     padding: 10px 14px;
     background: #f7f8fb;
     border-bottom: 1px solid #e3e6ed;
@@ -341,20 +323,16 @@ pre {
 .score-ring.mid  { border-color: #e6a817; }
 .score-ring.low  { border-color: #e53e3e; }
 
-.score-ring #ct-score,
-.score-ring #prompt-score {
+.score-ring #ct-score {
     font-size: 28px;
     font-weight: 800;
     line-height: 1;
     color: #1a1a2e;
 }
 
-.score-ring.high #ct-score,
-.score-ring.high #prompt-score { color: #38a169; }
-.score-ring.mid  #ct-score,
-.score-ring.mid  #prompt-score { color: #e6a817; }
-.score-ring.low  #ct-score,
-.score-ring.low  #prompt-score { color: #e53e3e; }
+.score-ring.high #ct-score { color: #38a169; }
+.score-ring.mid  #ct-score { color: #e6a817; }
+.score-ring.low  #ct-score { color: #e53e3e; }
 
 .score-label {
     font-size: 11px;
@@ -490,6 +468,40 @@ pre {
     justify-content: flex-end;
 }
 
+#answer-submit-row.hidden {
+    display: none;
+}
+
+.hint-btn {
+    background: #fffaf0;
+    color: #b7791f;
+    border: 1.5px solid #f6ad55;
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.hint-btn:hover:not(:disabled) {
+    background: #feebc8;
+    border-color: #ed8936;
+}
+
+.hint-btn:disabled {
+    background: #f7fafc;
+    color: #a0aec0;
+    border-color: #e2e8f0;
+    cursor: default;
+}
+
+/* 챗봇 내부에 동적 삽입되는 힌트 버튼 */
+.hint-btn-inline {
+    align-self: flex-start;
+    margin-top: 2px;
+}
+
 /* ── 피드백 ── */
 #feedback-area {
     display: flex;
@@ -536,252 +548,3 @@ pre {
     margin-top: 2px;
 }
 
-/* ── 세션 시작 오버레이 (수준 1: 직전 CT 피드백 표시) ── */
-#session-start-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.65);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1001;
-}
-
-#session-start-overlay.hidden {
-    display: none;
-}
-
-.session-start-box {
-    background: #ffffff;
-    border-radius: 16px;
-    padding: 32px 36px;
-    max-width: 520px;
-    width: 90%;
-    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.2);
-    display: flex;
-    flex-direction: column;
-    gap: 22px;
-}
-
-.session-start-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.session-start-title {
-    font-size: 18px;
-    font-weight: 700;
-    color: #1a1a2e;
-}
-
-/* CT 점수 바 */
-.ct-bar-list {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.ct-bar-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.ct-bar-label {
-    width: 108px;
-    font-size: 13px;
-    font-weight: 600;
-    color: #4a5568;
-    flex-shrink: 0;
-}
-
-.ct-bar-label.weak {
-    color: #e53e3e;
-}
-
-.ct-bar-track {
-    flex: 1;
-    height: 10px;
-    background: #e2e8f0;
-    border-radius: 5px;
-    overflow: hidden;
-}
-
-.ct-bar-fill {
-    height: 100%;
-    border-radius: 5px;
-    background: #4f6ef7;
-    transition: width 0.4s ease;
-}
-
-.ct-bar-fill.weak {
-    background: #e53e3e;
-}
-
-.ct-bar-score {
-    width: 28px;
-    font-size: 12px;
-    font-weight: 700;
-    color: #718096;
-    text-align: right;
-    flex-shrink: 0;
-}
-
-/* 약점 팁 */
-.weak-ct-tip {
-    background: #fff5f5;
-    border: 1px solid #fed7d7;
-    border-radius: 10px;
-    padding: 13px 16px;
-    font-size: 14px;
-    line-height: 1.75;
-    color: #742a2a;
-}
-
-.weak-ct-tip.hidden {
-    display: none;
-}
-
-.weak-ct-tip strong {
-    color: #e53e3e;
-}
-
-.session-start-btn {
-    align-self: flex-end;
-    font-size: 14px;
-    padding: 8px 22px;
-}
-
-/* ── 오답 피드백 블록 ── */
-#feedback-area.wrong-bg {
-    background: #fff5f5;
-    border-top-color: #fc8181;
-}
-
-.feedback-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 2px;
-}
-
-.ack-btn {
-    background: #718096;
-    font-size: 13px;
-    padding: 5px 14px;
-}
-
-.ack-btn:hover {
-    background: #4a5568;
-}
-
-.ack-btn.hidden,
-#next-btn.hidden {
-    display: none;
-}
-
-/* ── 대화 카운터 배지 (Task 10) ── */
-.chat-count-badge {
-    font-size: 12px;
-    font-weight: 700;
-    color: #a0aec0;
-    background: #f0f2f5;
-    border: 1px solid #d1d5db;
-    border-radius: 20px;
-    padding: 2px 10px;
-    white-space: nowrap;
-}
-
-.chat-count-badge.met {
-    color: #276749;
-    background: #f0fff4;
-    border-color: #38a169;
-}
-
-/* ── 최소 대화 안내 박스 ── */
-.chat-nudge-msg {
-    text-align: center;
-    padding: 14px 20px;
-    color: #744210;
-    font-size: 14px;
-    line-height: 1.8;
-    background: #fffbeb;
-    border: 1px solid #f6e05e;
-    border-radius: 10px;
-    margin: 12px 16px;
-}
-
-/* ════════════════════════════════════════════════════════════
-   반응형 — 데스크톱(기본) → 태블릿 → 모바일
-   문제 : 챗봇 비율 1:1 을 모든 분기에서 유지
-   ════════════════════════════════════════════════════════════ */
-
-/* ── 태블릿/좁은 가로 (≤1100px) ──
-   코드는 위쪽 가로 전체, 그 아래 문제 + 챗봇을 좌우 1:1 로 배치 */
-@media (max-width: 1100px) {
-    .grid {
-        grid-template-columns: 1fr 1fr;
-        grid-template-rows: minmax(180px, 34vh) minmax(0, 1fr);
-    }
-    .code-panel {
-        grid-row: 1 / 2;
-        grid-column: 1 / 3;     /* 코드 위쪽 가로 전체 */
-    }
-    .problem-panel {
-        grid-row: 2 / 3;
-        grid-column: 1 / 2;     /* 아래 왼쪽 */
-    }
-    .chat-panel {
-        grid-row: 2 / 3;
-        grid-column: 2 / 3;     /* 아래 오른쪽 (문제와 1:1) */
-    }
-}
-
-/* ── 모바일/세로 화면 (≤720px) ──
-   세로 스택 + 페이지 스크롤. 문제·챗봇 높이를 같게 두어 1:1 유지 */
-@media (max-width: 720px) {
-    body {
-        height: auto;
-        overflow: auto;
-    }
-    .grid {
-        display: flex;
-        flex-direction: column;
-        height: auto;
-        min-height: 100vh;
-    }
-    .code-panel,
-    .problem-panel,
-    .chat-panel {
-        grid-row: auto;
-        grid-column: auto;
-        flex: none;
-    }
-    .code-panel    { min-height: 38vh; }
-    .problem-panel { min-height: 70vh; }   /* 문제 : 챗봇 = 1:1 */
-    .chat-panel    { min-height: 70vh; }
-
-    pre { font-size: 14px; padding: 12px; }
-    .text-display { font-size: 14px; padding: 16px 14px; }
-}
-
-/* ── 평가/세션시작 오버레이 카드: 좁은 화면에서 세로 1열 ── */
-@media (max-width: 600px) {
-    .eval-cards {
-        grid-template-columns: 1fr;
-    }
-    .eval-box {
-        padding: 24px 20px;
-        gap: 20px;
-    }
-    .session-start-box {
-        padding: 24px 20px;
-    }
-}
-
-/* ── 아주 좁은 화면: 코드 가독성 보정 ── */
-@media (max-width: 420px) {
-    pre { font-size: 13px; }
-    .chat-bubble { max-width: 92%; }
-}

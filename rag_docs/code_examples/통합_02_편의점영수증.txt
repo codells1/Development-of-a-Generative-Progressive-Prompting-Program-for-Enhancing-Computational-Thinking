@@ -1,0 +1,42 @@
+# 주제: 편의점 영수증·거스름돈 계산 (통합/융합)
+# 난이도: 중3~고1
+# 사용 개념: 리스트, 딕셔너리, 함수, 반복문, 조건문, 산술 연산
+# 통합 포인트: 합계 계산·할인 적용·거스름돈·영수증 출력이 모여 결제 한 건을 처리한다
+
+def subtotal(cart):
+    total = 0
+    for item in cart:
+        total += item["price"] * item["qty"]
+    return total
+
+def apply_discount(amount):
+    if amount >= 20000:
+        return amount * 0.9
+    elif amount >= 10000:
+        return amount * 0.95
+    return amount
+
+def print_receipt(cart, paid):
+    print("==== 영수증 ====")
+    for item in cart:
+        line_total = item["price"] * item["qty"]
+        print(f"{item['name']} x{item['qty']}  {line_total:,}원")
+    before = subtotal(cart)
+    after = apply_discount(before)
+    discount = before - after
+    change = paid - after
+    print("-" * 18)
+    print(f"합계   {before:,.0f}원")
+    print(f"할인   -{discount:,.0f}원")
+    print(f"받을돈 {after:,.0f}원")
+    print(f"받은돈 {paid:,}원")
+    print(f"거스름 {change:,.0f}원")
+
+cart = [
+    {"name": "삼각김밥", "price": 1200, "qty": 2},
+    {"name": "컵라면", "price": 1500, "qty": 1},
+    {"name": "생수", "price": 900, "qty": 3},
+]
+paid = 10000
+
+print_receipt(cart, paid)

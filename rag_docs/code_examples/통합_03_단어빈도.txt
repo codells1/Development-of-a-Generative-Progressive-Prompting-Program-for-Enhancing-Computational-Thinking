@@ -1,0 +1,39 @@
+# 주제: 문장 속 단어 빈도 분석 (통합/융합)
+# 난이도: 고1~고2
+# 사용 개념: 문자열 처리, 딕셔너리, 리스트, 함수, 반복문, 정렬
+# 통합 포인트: 전처리·집계·정렬·출력이 모여 하나의 빈도 분석기를 이룬다
+
+def clean_text(text):
+    for mark in [",", ".", "!", "?"]:
+        text = text.replace(mark, "")
+    return text.lower()
+
+def count_words(text):
+    counts = {}
+    for word in text.split():
+        if word in counts:
+            counts[word] += 1
+        else:
+            counts[word] = 1
+    return counts
+
+def top_words(counts, n):
+    pairs = []
+    for word in counts:
+        pairs.append((word, counts[word]))
+    pairs.sort(key=lambda pair: pair[1], reverse=True)
+    return pairs[:n]
+
+sentence = "the cat and the dog and the bird. The cat ran, the dog ran!"
+
+cleaned = clean_text(sentence)
+counts = count_words(cleaned)
+ranking = top_words(counts, 3)
+
+print("== 단어 빈도 분석 ==")
+print(f"전체 단어 수: {len(cleaned.split())}")
+print(f"서로 다른 단어 수: {len(counts)}")
+print("가장 많이 나온 단어 3개:")
+for rank, pair in enumerate(ranking, start=1):
+    word, freq = pair
+    print(f"{rank}위: {word} ({freq}회)")

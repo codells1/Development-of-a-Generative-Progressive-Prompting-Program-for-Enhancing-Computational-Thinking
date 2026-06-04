@@ -45,9 +45,6 @@ try:
     from langchain_community.document_loaders import TextLoader, PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from openai import OpenAI
-    import faiss
-    import numpy as np
-    import pickle
     _AVAILABLE = True
 except ImportError as e:
     logging.warning(f"[RAG] 비활성화 — 패키지 누락: {e}")
@@ -115,46 +112,9 @@ def _load_file(file_path: str, splitter=None) -> List:
 
 
 def _save(collection: str):
-    """FAISS 인덱스를 디스크에 저장.
-
-    faiss 의 C++ 파일 writer(store.save_local 내부)는 한글 등 비ASCII 경로에서
-    'Illegal byte sequence' 로 실패한다. serialize_index 로 바이트를 받아
-    파이썬 open()(유니코드 경로 정상 처리)으로 직접 저장해 우회한다.
-    """
     store = _stores.get(collection)
-    if not store:
-        return
-    folder = os.path.join(DB_DIR, collection)
-    os.makedirs(folder, exist_ok=True)
-    arr = faiss.serialize_index(store.index)
-    with open(os.path.join(folder, "index.faiss"), "wb") as f:
-        f.write(arr.tobytes())
-    with open(os.path.join(folder, "index.pkl"), "wb") as f:
-        pickle.dump((store.docstore, store.index_to_docstore_id), f)
-
-
-def _load_local(collection: str) -> Optional[object]:
-    """_save 로 저장한 인덱스를 로드. 파일이 없으면 None.
-
-    FAISS.load_local 도 내부적으로 faiss 의 C++ reader 를 쓰므로 한글 경로에서
-    실패한다. deserialize_index 로 우회한다.
-    """
-    folder = os.path.join(DB_DIR, collection)
-    fpath = os.path.join(folder, "index.faiss")
-    ppath = os.path.join(folder, "index.pkl")
-    if not (os.path.exists(fpath) and os.path.exists(ppath)):
-        return None
-    with open(fpath, "rb") as f:
-        index = faiss.deserialize_index(np.frombuffer(f.read(), dtype="uint8"))
-    with open(ppath, "rb") as f:
-        docstore, index_to_id = pickle.load(f)
-    return FAISS(
-        embedding_function=_embeddings,
-        index=index,
-        docstore=docstore,
-        index_to_docstore_id=index_to_id,
-        distance_strategy=DistanceStrategy.COSINE,
-    )
+    if store:
+        store.save_local(os.path.join(DB_DIR, collection))
 
 
 def _check(collection: str):
@@ -199,14 +159,16 @@ def _init():
     if not _AVAILABLE:
         return
     for col in COLLECTIONS:
-        try:
-            loaded = _load_local(col)
-            if loaded is not None:
-                _stores[col] = loaded
-                logging.info(f"[RAG] '{col}' 인덱스 로드 완료 ({loaded.index.ntotal}벡터)")
+        idx_path = os.path.join(DB_DIR, col)
+        if os.path.exists(idx_path):
+            try:
+                _stores[col] = FAISS.load_local(
+                    idx_path, _embeddings, allow_dangerous_deserialization=True
+                )
+                logging.info(f"[RAG] '{col}' 인덱스 로드 완료 ({_stores[col].index.ntotal}벡터)")
                 continue
-        except Exception as e:
-            logging.warning(f"[RAG] '{col}' 인덱스 로드 실패, 재빌드: {e}")
+            except Exception as e:
+                logging.warning(f"[RAG] '{col}' 인덱스 로드 실패, 재빌드: {e}")
 
         # 인덱스 없음 → rag_docs/ 에 파일이 있으면 빌드
         try:

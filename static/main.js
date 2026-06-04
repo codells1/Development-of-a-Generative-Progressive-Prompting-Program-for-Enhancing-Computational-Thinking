@@ -9,100 +9,12 @@ let selectedOption = null;       // 현재 선택된 라벨
 let currentTopic = "";
 const TOTAL_PROBLEMS = 5;
 
-const STAGES = ["변수·연산·조건", "반복·리스트", "함수", "알고리즘"];
-let currentStage = 0;
-let isFusion = false;
+// 챗봇 트리거 상태 (문제별 리셋)
+let hintUsed = false;          // 이번 문제에서 힌트 버튼을 눌렀는가
+let awaitingFor = null;        // "hint" | "explain" | null — 사용자 답글 대기 중인 트리거 종류
 
-// 수준 2: 직전 세션·단계의 CT 약점 (챗봇 프롬프트 주입용)
-let prevWeakCt = null;
-
-// ── 대화 최소 조건 설정값 (여기서만 수정) ───────────────────────
-// 세션 내 의미 있는 대화로 인정받는 최소 횟수 (권장 5~8)
-const MIN_CHAT_TURNS             = 6;
-// 마지막 입력 후 챗봇이 먼저 말을 거는 무입력 대기 시간, 초 (권장 30~90)
-const INACTIVITY_TIMEOUT_SEC     = 30;
-// 의미 있는 메시지로 인정하는 최소 자수 — 단답 제외 (권장 8~15)
-const MIN_MSG_LEN                = 10;
-// 오답 판정 후 챗봇 유도 메시지를 보내기까지의 딜레이, ms (권장 1000~3000)
-const WRONG_NUDGE_DELAY_MS       = 1500;
-// 문제 전체 완료 후 첫 유도 메시지를 보내기까지의 딜레이, ms
-const POST_COMPLETE_NUDGE_DELAY_MS = 600;
-// ────────────────────────────────────────────────────────────────
-
-let qualityChatCount    = 0;      // 품질 충족 대화 수 (세션 내)
-let inactivityTimer     = null;   // 무입력 타이머
-let wrongNudgeTimer     = null;   // 오답 유도 타이머
-let nudgeInProgress     = false;  // 유도 중복 방지
-let awaitingUserChat    = false;  // 유도 메시지 발송 후 사용자 채팅 대기 중 (제출 버튼 무시)
-let allProblemsComplete = false;  // 문제 완료 후 최소 대화 대기 중
-let stageChatHistory    = [];     // 현 단계 전용 대화 기록 (CT 측정용, 단계 전환마다 초기화)
-
-const CT_TIP = {
-    "분해":          "코드를 역할별로 나눠서 각 부분이 어떻게 동작하는지 질문해보세요.",
-    "패턴인식":      "코드에서 반복되는 패턴이나 규칙을 발견하는 질문을 해보세요.",
-    "추상화":        "변수나 함수가 실제로 무엇을 대표하는지 질문해보세요.",
-    "알고리즘적사고": "코드 실행 순서를 단계별로 추적하며 결과를 예측하는 질문을 해보세요.",
-};
-
-async function init() {
+function init() {
     checkStatus();
-    updateChatCount();   // 배지를 상수값으로 즉시 초기화
-
-    // 입력 중(타이핑)에는 타이머 일시정지 — 키 입력마다 타이머를 리셋
-    document.getElementById("chat-input").addEventListener("input", () => {
-        if (inactivityTimer) resetInactivityTimer();
-    });
-
-    await loadPreviousFeedback();
-}
-
-async function loadPreviousFeedback() {
-    try {
-        const res = await fetch("/api/previous-feedback");
-        const data = await res.json();
-        if (!data.has_previous) { generateCode(); return; }
-        prevWeakCt = data.weak_ct || null;
-        showSessionStartOverlay(data);
-    } catch {
-        generateCode();
-    }
-}
-
-function showSessionStartOverlay(data) {
-    document.getElementById("prev-topic").textContent = data.topic || "";
-
-    const container = document.getElementById("prev-ct-scores");
-    container.innerHTML = "";
-    const ctScores = data.ct_scores || {};
-    const weakCt = data.weak_ct || "";
-
-    for (const [skill, score] of Object.entries(ctScores)) {
-        const isWeak = skill === weakCt;
-        const row = document.createElement("div");
-        row.className = "ct-bar-row";
-        row.innerHTML =
-            `<span class="ct-bar-label${isWeak ? " weak" : ""}">${escapeHtml(skill)}</span>` +
-            `<div class="ct-bar-track">` +
-            `<div class="ct-bar-fill${isWeak ? " weak" : ""}" style="width:${score / 5 * 100}%"></div>` +
-            `</div>` +
-            `<span class="ct-bar-score">${score}/5</span>`;
-        container.appendChild(row);
-    }
-
-    const tipEl = document.getElementById("weak-ct-tip");
-    if (weakCt && CT_TIP[weakCt]) {
-        tipEl.innerHTML =
-            `지난번 <strong>'${escapeHtml(weakCt)}'</strong>이(가) 약했어요.<br>${escapeHtml(CT_TIP[weakCt])}`;
-        tipEl.classList.remove("hidden");
-    } else {
-        tipEl.classList.add("hidden");
-    }
-
-    document.getElementById("session-start-overlay").classList.remove("hidden");
-}
-
-function startLearning() {
-    document.getElementById("session-start-overlay").classList.add("hidden");
     generateCode();
 }
 
@@ -131,11 +43,6 @@ async function checkStatus() {
 }
 
 async function generateCode() {
-    const stageLabel = isFusion
-        ? "융합 종합 평가"
-        : `${currentStage + 1}단계: ${STAGES[currentStage]}`;
-    currentTopic = isFusion ? "융합" : STAGES[currentStage];
-
     const codeBlock = document.getElementById("code-display");
     const problemDisplay = document.getElementById("problem-display");
     const answerArea = document.getElementById("answer-area");
@@ -145,15 +52,10 @@ async function generateCode() {
     submittedAnswers = [];
     currentProblemData = null;
     selectedOption = null;
-    qualityChatCount = 0;
-    allProblemsComplete = false;
-    awaitingUserChat = false;
-    stageChatHistory = [];
-    clearInactivityTimer();
-    updateChatCount();
+    currentTopic = "";
+    hideHintButton();
 
-    document.getElementById("topic-label").textContent = stageLabel;
-    setOverlay(true, `${stageLabel} 코드 만드는 중...`);
+    setOverlay(true, "코드 만드는 중...");
     codeBlock.innerHTML = "<code></code>";
     problemDisplay.className = "text-display placeholder";
     problemDisplay.textContent = "";
@@ -161,11 +63,10 @@ async function generateCode() {
     answerArea.classList.remove("visible");
 
     try {
-        const body = isFusion ? { is_fusion: true } : { stage: currentStage };
         const res = await fetch("/api/generate-code", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+            body: "{}",
         });
         const data = await res.json();
 
@@ -176,11 +77,10 @@ async function generateCode() {
 
         codeBlock.innerHTML = `<code>${escapeHtml(data.code)}</code>`;
         currentCode = data.code;
-        currentTopic = data.topic || currentTopic;
+        currentTopic = data.topic || "";
 
         setOverlay(true, `문제 1 / ${TOTAL_PROBLEMS} 만드는 중...`);
         await generateNextProblem();
-        resetInactivityTimer();
     } catch (e) {
         codeBlock.innerHTML = `<code style="color:#e53e3e">오류: ${e.message}</code>`;
     } finally {
@@ -213,6 +113,10 @@ function selectOption(label) {
 async function generateNextProblem() {
     const problemDisplay = document.getElementById("problem-display");
     const answerArea = document.getElementById("answer-area");
+
+    hintUsed = false;
+    awaitingFor = null;
+    hideHintButton();
 
     try {
         const res = await fetch("/api/generate-problem", {
@@ -256,16 +160,10 @@ async function generateNextProblem() {
 
         renderOptions(data.options);
         document.getElementById("submit-btn").disabled = true;
-
-        const feedbackArea = document.getElementById("feedback-area");
-        feedbackArea.classList.add("hidden");
-        feedbackArea.classList.remove("wrong-bg");
-        document.getElementById("ack-btn").classList.add("hidden");
-        document.getElementById("next-btn").classList.add("hidden");
-
+        document.getElementById("feedback-area").classList.add("hidden");
         document.getElementById("answer-submit-row").classList.remove("hidden");
         answerArea.classList.add("visible");
-        resetInactivityTimer();   // 새 문제마다 타이머 초기화
+        showHintButton();
     } catch (e) {
         console.error("[문제생성] 오류:", e);
         problemDisplay.className = "text-display";
@@ -274,176 +172,53 @@ async function generateNextProblem() {
     }
 }
 
-// ── Task 10: 대화 최소 조건 헬퍼 ────────────────────────────────
-
-function isQualityMessage(msg) {
-    return msg.trim().length >= MIN_MSG_LEN;
-}
-
-function updateChatCount() {
-    const el = document.getElementById("chat-count");
-    if (!el) return;
-    const met = qualityChatCount >= MIN_CHAT_TURNS;
-    el.textContent = `${qualityChatCount} / ${MIN_CHAT_TURNS}회`;
-    el.className = "chat-count-badge" + (met ? " met" : "");
-    const remainingEl = document.getElementById("remaining-count");
-    if (remainingEl) {
-        remainingEl.textContent = Math.max(0, MIN_CHAT_TURNS - qualityChatCount);
-    }
-}
-
-function clearInactivityTimer() {
-    if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
-}
-
-function resetInactivityTimer() {
-    clearInactivityTimer();
-    inactivityTimer = setTimeout(() => {
-        triggerNudge("inactivity");
-    }, INACTIVITY_TIMEOUT_SEC * 1000);
-}
-
-async function triggerNudge(reason) {
-    if (nudgeInProgress) return;
-    nudgeInProgress = true;
-    clearInactivityTimer();   // 중복 유도 방지 — 남아있는 타이머 즉시 해제
-
-    const bubble = appendBubble("assistant", "");
-    let fullReply = "";
-
-    try {
-        const res = await fetch("/api/chat-nudge", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                messages: chatHistory,
-                session_id: sessionId,
-                code_context: currentCode,
-                current_problem: currentProblemData ? currentProblemData.question : null,
-                weak_ct: prevWeakCt,
-                reason,
-            }),
-        });
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const lines = decoder.decode(value).split("\n");
-            for (const line of lines) {
-                if (!line.startsWith("data: ")) continue;
-                const payload = JSON.parse(line.slice(6));
-                if (payload.error) {
-                    bubble.className = "chat-bubble error";
-                    bubble.textContent = payload.error;
-                    return;
-                }
-                if (payload.delta) {
-                    fullReply += payload.delta;
-                    bubble.textContent = fullReply.trimStart();
-                    document.getElementById("chat-messages").scrollTop = 9999;
-                }
-            }
-        }
-
-        if (fullReply) {
-            chatHistory.push({ role: "assistant", content: fullReply });
-            stageChatHistory.push({ role: "assistant", content: fullReply });
-        }
-    } catch (e) {
-        bubble.className = "chat-bubble error";
-        bubble.textContent = "유도 메시지 오류";
-    } finally {
-        nudgeInProgress = false;
-        awaitingUserChat = true;  // 사용자가 채팅으로 응답할 때까지 다음 유도 차단
-        // 타이머 재시작 안 함 — 사용자가 메시지를 보낼 때(sendMessage)만 재시작
-    }
-}
-
 function submitAnswer() {
     if (!selectedOption || !currentProblemData) return;
 
     const isCorrect = selectedOption === currentProblemData.answer;
+    submittedAnswers.push(selectedOption);
 
-    // 선택지 비활성화
+    // 선택지 비활성화 + 정답/오답 색상
     document.querySelectorAll(".option-btn").forEach(btn => {
         btn.disabled = true;
-        if (isCorrect && btn.dataset.value === currentProblemData.answer) {
+        if (btn.dataset.value === currentProblemData.answer) {
             btn.classList.add("correct");
-        } else if (!isCorrect && btn.dataset.value === selectedOption) {
-            // 오답: 선택한 버튼만 빨강 — 정답 버튼은 표시 안 함(정답 노출 금지)
+        } else if (btn.dataset.value === selectedOption && !isCorrect) {
             btn.classList.add("wrong");
         }
     });
 
+    // 피드백 표시
     const badge = document.getElementById("feedback-badge");
     badge.className = "feedback-badge " + (isCorrect ? "feedback-correct" : "feedback-wrong");
-    badge.textContent = isCorrect ? "✓ 정답" : "✗ 오답";
+    badge.textContent = isCorrect
+        ? "✓ 정답"
+        : `✗ 오답 — 정답: ${currentProblemData.answer}`;
     document.getElementById("feedback-explanation").textContent =
-        isCorrect ? (currentProblemData.explanation || "") : "";
-
-    const feedbackArea = document.getElementById("feedback-area");
-    const ackBtn  = document.getElementById("ack-btn");
-    const nextBtn = document.getElementById("next-btn");
-
-    if (isCorrect) {
-        submittedAnswers.push(selectedOption);  // 정답일 때만 기록
-        feedbackArea.classList.remove("wrong-bg");
-        ackBtn.classList.add("hidden");
-        nextBtn.classList.remove("hidden");
-    } else {
-        feedbackArea.classList.add("wrong-bg");
-        ackBtn.classList.remove("hidden");
-        nextBtn.classList.add("hidden");
-        // 챗봇이 이미 유도 메시지를 보낸 후 사용자가 아직 채팅으로 응답하지 않았으면 재발동 안 함
-        if (!awaitingUserChat) {
-            wrongNudgeTimer = setTimeout(() => triggerNudge("wrong_answer"), WRONG_NUDGE_DELAY_MS);
-        }
-    }
+        currentProblemData.explanation || "";
 
     document.getElementById("answer-submit-row").classList.add("hidden");
-    feedbackArea.classList.remove("hidden");
-}
+    document.getElementById("feedback-area").classList.remove("hidden");
 
-function acknowledgeWrong() {
-    if (wrongNudgeTimer) { clearTimeout(wrongNudgeTimer); wrongNudgeTimer = null; }
-    // 다음 문제로 가지 않고 재시도: 선택지 초기화 후 다시 풀 수 있게 복원
-    selectedOption = null;
-    document.querySelectorAll(".option-btn").forEach(btn => {
-        btn.disabled = false;
-        btn.classList.remove("wrong", "correct", "selected");
-    });
-    document.getElementById("submit-btn").disabled = true;
-    document.getElementById("answer-submit-row").classList.remove("hidden");
-    document.getElementById("feedback-area").classList.add("hidden");
+    // 힌트 없이 정답 → 챗봇이 풀이 설명 요청. 답글 받기 전까지 "다음 문제" 잠금.
+    if (isCorrect && !hintUsed) {
+        awaitingFor = "explain";
+        setNextProblemEnabled(false);
+        hideHintButton();
+        triggerChatbot("explain");
+    }
 }
 
 async function nextProblem() {
     currentProblemIndex++;
 
     if (currentProblemIndex >= TOTAL_PROBLEMS) {
-        clearInactivityTimer();
-        document.getElementById("problem-count").textContent = "완료";
         const problemDisplay = document.getElementById("problem-display");
         const answerArea = document.getElementById("answer-area");
-        answerArea.classList.remove("visible");
-
-        if (qualityChatCount < MIN_CHAT_TURNS) {
-            allProblemsComplete = true;
-            const remaining = MIN_CHAT_TURNS - qualityChatCount;
-            problemDisplay.className = "text-display";
-            problemDisplay.innerHTML =
-                `<div class="complete-msg">모든 문제를 완료했어요!</div>` +
-                `<div class="chat-nudge-msg">평가 전에 챗봇과 조금 더 대화해볼까요?<br>` +
-                `<span id="remaining-count">${remaining}</span>회 더 질문하면 평가가 시작됩니다.</div>`;
-            setTimeout(() => triggerNudge("inactivity"), POST_COMPLETE_NUDGE_DELAY_MS);
-            return;
-        }
-
+        document.getElementById("problem-count").textContent = "완료";
         problemDisplay.className = "text-display";
         problemDisplay.innerHTML = `<div class="complete-msg">모든 문제를 완료했습니다! 평가 중...</div>`;
+        answerArea.classList.remove("visible");
         await triggerEvaluation();
         return;
     }
@@ -457,7 +232,6 @@ async function nextProblem() {
 }
 
 async function triggerEvaluation() {
-    clearInactivityTimer();
     setOverlay(true, "학습 결과 평가 중...");
     try {
         const res = await fetch("/api/evaluate", {
@@ -469,7 +243,7 @@ async function triggerEvaluation() {
                 code: currentCode,
                 problems: previousProblems,
                 answers: submittedAnswers,
-                chat_history: stageChatHistory,
+                chat_history: chatHistory,
             }),
         });
         const data = await res.json();
@@ -492,33 +266,16 @@ function showEvalResult(data, errorMsg = null) {
 
     if (errorMsg || !data) {
         document.getElementById("ct-score").textContent = "?";
-        document.getElementById("prompt-score").textContent = "?";
         document.getElementById("ct-feedback").textContent = errorMsg || "평가 중 오류가 발생했습니다.";
-        document.getElementById("prompt-feedback").textContent = "";
         document.getElementById("ct-score-ring").className = "score-ring";
-        document.getElementById("prompt-score-ring").className = "score-ring";
     } else {
-        // 수준 2: 이 단계 약점을 다음 단계 챗봇에 즉시 반영
-        if (data.weak_ct) prevWeakCt = data.weak_ct;
-
         const ctScore = parseInt(data.ct_score) || 0;
-        const promptScore = parseInt(data.prompt_score) || 0;
         document.getElementById("ct-score").textContent = ctScore;
-        document.getElementById("prompt-score").textContent = promptScore;
         document.getElementById("ct-feedback").textContent = data.ct_feedback || "";
-        document.getElementById("prompt-feedback").textContent = data.prompt_feedback || "";
         document.getElementById("ct-score-ring").className = "score-ring " + scoreClass(ctScore);
-        document.getElementById("prompt-score-ring").className = "score-ring " + scoreClass(promptScore);
     }
 
-    const nextBtn = document.querySelector(".eval-next-btn");
-    if (isFusion) {
-        nextBtn.textContent = "처음으로 →";
-    } else if (currentStage >= STAGES.length - 1) {
-        nextBtn.textContent = "융합 평가 →";
-    } else {
-        nextBtn.textContent = `${currentStage + 2}단계로 →`;
-    }
+    document.querySelector(".eval-next-btn").textContent = "새 코드 →";
 
     overlay.classList.remove("hidden");
 }
@@ -531,15 +288,70 @@ function scoreClass(score) {
 
 function closeEvalAndRestart() {
     document.getElementById("eval-overlay").classList.add("hidden");
-    if (isFusion) {
-        currentStage = 0;
-        isFusion = false;
-    } else if (currentStage >= STAGES.length - 1) {
-        isFusion = true;
-    } else {
-        currentStage++;
-    }
     generateCode();
+}
+
+// ── 챗봇 트리거 / 메시지 / 헬퍼 ─────────────────────────────────────
+
+async function requestHint() {
+    if (!currentProblemData || awaitingFor || hintUsed) return;
+    hintUsed = true;
+    awaitingFor = "hint";
+    hideHintButton();
+    setAnswerInputEnabled(false);
+    await triggerChatbot("hint");
+}
+
+function showHintButton() {
+    hideHintButton();
+    const container = document.getElementById("chat-messages");
+    const btn = document.createElement("button");
+    btn.id = "hint-btn";
+    btn.className = "hint-btn hint-btn-inline";
+    btn.textContent = "💡 힌트";
+    btn.onclick = requestHint;
+    container.appendChild(btn);
+    container.scrollTop = container.scrollHeight;
+}
+
+function hideHintButton() {
+    const btn = document.getElementById("hint-btn");
+    if (btn) btn.remove();
+}
+
+async function triggerChatbot(triggerType) {
+    const input = document.getElementById("chat-input");
+    input.disabled = true;
+    const bubble = appendBubble("assistant", "");
+    let fullReply = "";
+    try {
+        const res = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                trigger: triggerType,
+                session_id: sessionId,
+                code_context: currentCode,
+                current_problem: currentProblemData ? currentProblemData.question : null,
+            }),
+        });
+        await streamSSE(res, (delta) => {
+            fullReply += delta;
+            bubble.textContent = fullReply;
+            document.getElementById("chat-messages").scrollTop = 9999;
+        });
+        chatHistory.push({ role: "assistant", content: fullReply });
+    } catch (e) {
+        bubble.className = "chat-bubble error";
+        bubble.textContent = `오류: ${e.message}`;
+        // 트리거 실패 시 사용자가 막히지 않도록 풀이 섹터 복구
+        if (awaitingFor === "hint") setAnswerInputEnabled(true);
+        else if (awaitingFor === "explain") setNextProblemEnabled(true);
+        awaitingFor = null;
+    } finally {
+        input.disabled = false;
+        input.focus();
+    }
 }
 
 async function sendMessage() {
@@ -547,25 +359,18 @@ async function sendMessage() {
     const message = input.value.trim();
     if (!message) return;
 
-    const isQuality = isQualityMessage(message);
-
     input.value = "";
     input.disabled = true;
     appendBubble("user", message);
     chatHistory.push({ role: "user", content: message });
-    stageChatHistory.push({ role: "user", content: message });
 
-    awaitingUserChat = false;  // 사용자 채팅 → 다음 유도 허용
-
-    if (isQuality) {
-        qualityChatCount++;
-        updateChatCount();
-    }
-    resetInactivityTimer();
+    // 사용자 답글이 들어왔으니 잠갔던 문제 풀이 섹터 즉시 해제
+    if (awaitingFor === "hint") setAnswerInputEnabled(true);
+    else if (awaitingFor === "explain") setNextProblemEnabled(true);
+    awaitingFor = null;
 
     const bubble = appendBubble("assistant", "");
     let fullReply = "";
-
     try {
         const res = await fetch("/api/chat", {
             method: "POST",
@@ -575,47 +380,36 @@ async function sendMessage() {
                 session_id: sessionId,
                 code_context: currentCode,
                 current_problem: currentProblemData ? currentProblemData.question : null,
-                weak_ct: prevWeakCt,
             }),
         });
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const lines = decoder.decode(value).split("\n");
-            for (const line of lines) {
-                if (!line.startsWith("data: ")) continue;
-                const payload = JSON.parse(line.slice(6));
-                if (payload.error) {
-                    bubble.className = "chat-bubble error";
-                    bubble.textContent = payload.error;
-                    return;
-                }
-                if (payload.delta) {
-                    fullReply += payload.delta;
-                    bubble.textContent = fullReply.trimStart();
-                    document.getElementById("chat-messages").scrollTop = 9999;
-                }
-            }
-        }
-
+        await streamSSE(res, (delta) => {
+            fullReply += delta;
+            bubble.textContent = fullReply;
+            document.getElementById("chat-messages").scrollTop = 9999;
+        });
         chatHistory.push({ role: "assistant", content: fullReply });
-        stageChatHistory.push({ role: "assistant", content: fullReply });
-
-        // 문제 완료 후 최소 대화 달성 → 평가 자동 진입
-        if (isQuality && allProblemsComplete && qualityChatCount >= MIN_CHAT_TURNS) {
-            allProblemsComplete = false;
-            const problemDisplay = document.getElementById("problem-display");
-            problemDisplay.innerHTML = `<div class="complete-msg">대화 완료! 평가를 시작합니다...</div>`;
-            await triggerEvaluation();
-        }
+    } catch (e) {
+        bubble.className = "chat-bubble error";
+        bubble.textContent = `오류: ${e.message}`;
     } finally {
         input.disabled = false;
         input.focus();
+    }
+}
+
+async function streamSSE(res, onDelta) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const lines = decoder.decode(value).split("\n");
+        for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const payload = JSON.parse(line.slice(6));
+            if (payload.error) throw new Error(payload.error);
+            if (payload.delta) onDelta(payload.delta);
+        }
     }
 }
 
@@ -624,9 +418,28 @@ function appendBubble(role, text) {
     const bubble = document.createElement("div");
     bubble.className = `chat-bubble ${role}`;
     bubble.textContent = text;
-    container.appendChild(bubble);
+    const hintBtn = document.getElementById("hint-btn");
+    if (hintBtn) {
+        container.insertBefore(bubble, hintBtn);  // 힌트 버튼은 항상 최하단에 유지
+    } else {
+        container.appendChild(bubble);
+    }
     container.scrollTop = container.scrollHeight;
     return bubble;
+}
+
+function setAnswerInputEnabled(enabled) {
+    document.querySelectorAll(".option-btn").forEach(btn => {
+        if (!btn.classList.contains("correct") && !btn.classList.contains("wrong")) {
+            btn.disabled = !enabled;
+        }
+    });
+    document.getElementById("submit-btn").disabled = !enabled || !selectedOption;
+}
+
+function setNextProblemEnabled(enabled) {
+    const btn = document.getElementById("next-problem-btn");
+    if (btn) btn.disabled = !enabled;
 }
 
 function escapeHtml(str) {
@@ -634,18 +447,6 @@ function escapeHtml(str) {
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
-}
-
-function skipToNext() {
-    if (isFusion) {
-        currentStage = 0;
-        isFusion = false;
-    } else if (currentStage >= STAGES.length - 1) {
-        isFusion = true;
-    } else {
-        currentStage++;
-    }
-    generateCode();
 }
 
 init();

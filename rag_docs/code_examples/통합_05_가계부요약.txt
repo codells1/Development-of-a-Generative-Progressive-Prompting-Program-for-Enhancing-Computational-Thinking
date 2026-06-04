@@ -1,0 +1,46 @@
+# 주제: 월별 가계부 요약 (통합/융합)
+# 난이도: 고1~고2
+# 사용 개념: 리스트, 딕셔너리, 함수, 반복문, 조건문, 누적 집계
+# 통합 포인트: 수입·지출 집계, 카테고리별 분류, 잔액 계산이 모여 한 달 가계부 요약을 만든다
+
+def total_by_type(records, kind):
+    total = 0
+    for record in records:
+        if record["type"] == kind:
+            total += record["amount"]
+    return total
+
+def expense_by_category(records):
+    summary = {}
+    for record in records:
+        if record["type"] == "지출":
+            category = record["category"]
+            summary[category] = summary.get(category, 0) + record["amount"]
+    return summary
+
+def print_summary(records):
+    income = total_by_type(records, "수입")
+    expense = total_by_type(records, "지출")
+    balance = income - expense
+    by_category = expense_by_category(records)
+    print("== 이번 달 가계부 요약 ==")
+    print(f"총 수입: {income:,}원")
+    print(f"총 지출: {expense:,}원")
+    print(f"잔액: {balance:,}원")
+    print("지출 상세:")
+    for category in by_category:
+        print(f"  {category}: {by_category[category]:,}원")
+    if balance < 0:
+        print("[주의] 이번 달 적자입니다.")
+    else:
+        print("[양호] 흑자를 유지했습니다.")
+
+records = [
+    {"type": "수입", "category": "용돈", "amount": 50000},
+    {"type": "지출", "category": "간식", "amount": 12000},
+    {"type": "지출", "category": "교통", "amount": 8000},
+    {"type": "지출", "category": "간식", "amount": 5000},
+    {"type": "수입", "category": "알바", "amount": 30000},
+]
+
+print_summary(records)

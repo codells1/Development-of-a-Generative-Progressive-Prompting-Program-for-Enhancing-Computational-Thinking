@@ -1,0 +1,47 @@
+# 주제: 객관식 퀴즈 자동 채점 (통합/융합)
+# 난이도: 중3~고1
+# 사용 개념: 리스트, 딕셔너리, 함수, 반복문, 조건문
+# 통합 포인트: 채점·점수 계산·등급 판정·결과 출력이 모여 한 번의 채점을 완성한다
+
+def grade_quiz(quiz, answers):
+    correct = 0
+    for i in range(len(quiz)):
+        if answers[i] == quiz[i]["answer"]:
+            correct += 1
+    return correct
+
+def score_percent(correct, total):
+    return correct / total * 100
+
+def get_level(percent):
+    if percent >= 90:
+        return "최우수"
+    elif percent >= 70:
+        return "우수"
+    elif percent >= 50:
+        return "보통"
+    return "노력요함"
+
+def print_result(quiz, answers):
+    total = len(quiz)
+    correct = grade_quiz(quiz, answers)
+    percent = score_percent(correct, total)
+    level = get_level(percent)
+    print("== 퀴즈 결과 ==")
+    for i in range(total):
+        mark = "O" if answers[i] == quiz[i]["answer"] else "X"
+        print(f"{i + 1}번 [{mark}] 내 답:{answers[i]} / 정답:{quiz[i]['answer']}")
+    print("-" * 22)
+    print(f"맞은 개수: {correct}/{total}")
+    print(f"점수: {percent:.1f}점")
+    print(f"등급: {level}")
+
+quiz = [
+    {"q": "파이썬 확장자는?", "answer": "B"},
+    {"q": "리스트 기호는?", "answer": "A"},
+    {"q": "반복문 키워드는?", "answer": "C"},
+    {"q": "함수 정의 키워드는?", "answer": "D"},
+]
+my_answers = ["B", "A", "B", "D"]
+
+print_result(quiz, my_answers)

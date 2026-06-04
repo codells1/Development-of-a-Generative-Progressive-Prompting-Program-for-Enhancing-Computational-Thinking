@@ -8,18 +8,6 @@
 </head>
 <body>
 
-    <div id="session-start-overlay" class="hidden">
-        <div class="session-start-box">
-            <div class="session-start-header">
-                <span class="session-start-title">지난 학습 결과</span>
-                <span class="eval-topic-tag" id="prev-topic"></span>
-            </div>
-            <div class="ct-bar-list" id="prev-ct-scores"></div>
-            <div id="weak-ct-tip" class="weak-ct-tip hidden"></div>
-            <button class="session-start-btn" onclick="startLearning()">학습 시작 →</button>
-        </div>
-    </div>
-
     <div id="eval-overlay" class="hidden">
         <div class="eval-box">
             <div class="eval-header">
@@ -34,14 +22,6 @@
                     </div>
                     <h3 class="eval-card-title">컴퓨팅 사고력</h3>
                     <p class="eval-feedback" id="ct-feedback"></p>
-                </div>
-                <div class="eval-card">
-                    <div class="score-ring" id="prompt-score-ring">
-                        <span id="prompt-score">-</span>
-                        <span class="score-label">점</span>
-                    </div>
-                    <h3 class="eval-card-title">프롬프팅 품질</h3>
-                    <p class="eval-feedback" id="prompt-feedback"></p>
                 </div>
             </div>
             <button class="eval-next-btn" onclick="closeEvalAndRestart()">다음 주제 →</button>
@@ -59,8 +39,8 @@
 
         <div class="quadrant code-panel">
             <div class="quadrant-header">
-                <span class="label">코드 예제 — <span id="topic-label" style="color:#4f6ef7;font-weight:700;"></span></span>
-                <button onclick="skipToNext()">다음 단계</button>
+                <span class="label">코드 예제</span>
+                <button onclick="generateCode()">새 코드</button>
             </div>
             <pre id="code-display"><code></code></pre>
         </div>
@@ -79,10 +59,7 @@
                 <div id="feedback-area" class="hidden">
                     <div id="feedback-badge" class="feedback-badge"></div>
                     <p id="feedback-explanation" class="feedback-explanation"></p>
-                    <div class="feedback-actions">
-                        <button id="ack-btn" class="ack-btn hidden" onclick="acknowledgeWrong()">다시 풀기 ↩</button>
-                        <button id="next-btn" class="hidden" onclick="nextProblem()">다음 문제 →</button>
-                    </div>
+                    <button id="next-problem-btn" onclick="nextProblem()">다음 문제 →</button>
                 </div>
             </div>
         </div>
@@ -90,7 +67,6 @@
         <div class="quadrant chat-panel">
             <div class="quadrant-header">
                 <span class="label">챗봇</span>
-                <span id="chat-count" class="chat-count-badge">0 / 6회</span>
                 <span id="lm-status" class="lm-status">● 연결 확인 중...</span>
             </div>
             <div id="chat-messages"></div>
