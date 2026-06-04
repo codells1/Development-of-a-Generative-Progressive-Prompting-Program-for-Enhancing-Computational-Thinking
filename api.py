@@ -148,17 +148,17 @@ def _parse_mcq(raw: str) -> dict:
     return data
 
 
-def _verify_answer(problem_data: dict) -> str | None:
+def _run_verification(problem_data: dict) -> tuple:
     """
-    verification_code를 subprocess로 실제 실행해 정답 라벨을 반환한다.
-    - 코드가 비어있거나 실행 실패 시 None → LLM answer 그대로 유지.
-    - 옵션 텍스트와 출력값을 문자열/float 두 방식으로 비교한다.
+    verification_code를 subprocess로 실제 실행한다.
+    반환: (matched_label, actual_output)
+    - matched_label : 보기와 일치한 라벨 문자열, 없으면 None
+    - actual_output : 실행 출력값 문자열, 실행 실패·빈 출력이면 None
     """
     code = (problem_data.get("verification_code") or "").strip()
     if not code:
-        return None
+        return None, None
 
-    # 자식 프로세스가 한글을 UTF-8로 출력하도록 강제 (Windows 기본 cp949 회피)
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
 
@@ -166,34 +166,34 @@ def _verify_answer(problem_data: dict) -> str | None:
         result = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True, timeout=5,
-            encoding="utf-8", errors="replace",  # 부모도 UTF-8로 디코딩
+            encoding="utf-8", errors="replace",
             env=env,
         )
     except Exception:
-        return None
+        return None, None
 
     if result.returncode != 0:
-        return None
+        return None, None
 
     actual = (result.stdout or "").strip()
     if not actual:
-        return None
+        return None, None
 
+    # 보기와 대조 (문자열 일치 → float 근사 순)
     for opt in problem_data.get("options", []):
         if ". " not in opt:
             continue
         label, text = opt.split(". ", 1)
         text = text.strip()
         if text == actual:
-            return label
-        # float 근사 비교 (예: 86.6 vs 86.60000000000001)
+            return label, actual
         try:
             if abs(float(text) - float(actual)) < 1e-6:
-                return label
+                return label, actual
         except ValueError:
             pass
 
-    return None
+    return None, actual  # 실행은 성공했지만 일치 보기 없음
 
 
 @api.route("/status", methods=["GET"])
@@ -248,10 +248,26 @@ def generate_problem():
             raw = llm.call_problem_gen(code, ct_skill, difficulty, templates, previous, problem_index)
             problem_data = _parse_mcq(raw)
 
-            # 실제 코드 실행으로 정답 확정 (성공 시 LLM answer 덮어쓰기)
-            verified = _verify_answer(problem_data)
-            if verified:
-                problem_data["answer"] = verified
+            # 실제 코드 실행으로 정답 확정
+            matched_label, actual_output = _run_verification(problem_data)
+            if matched_label:
+                # 보기에 정답값이 있고 라벨도 확정됨
+                problem_data["answer"] = matched_label
+            elif actual_output:
+                # 실행은 성공했지만 어느 보기와도 안 맞음
+                # → LLM 정답 보기가 수치형일 때만 교정 (개념형 질문은 LLM 답 유지)
+                llm_label = problem_data.get("answer", "A")
+                options = problem_data.get("options", [])
+                for i, opt in enumerate(options):
+                    if ". " not in opt or opt.split(". ", 1)[0] != llm_label:
+                        continue
+                    opt_text = opt.split(". ", 1)[1].strip()
+                    try:
+                        float(opt_text)          # 수치형 보기인지 확인
+                        options[i] = f"{llm_label}. {actual_output}"
+                    except ValueError:
+                        pass                     # 텍스트형(개념형) → 교정 안 함
+                    break
 
             # verification_code는 학생에게 노출하지 않음
             problem_data.pop("verification_code", None)
