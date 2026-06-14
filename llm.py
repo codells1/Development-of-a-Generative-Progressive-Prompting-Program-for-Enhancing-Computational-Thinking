@@ -367,6 +367,57 @@ def call_single_problem_gen(code: str, ct_skill: str, templates: str = "") -> st
     )
 
 
+# ── 비코드 분해 문항 생성 (intent-first, quiz_spec §4.B·§6) ──────────
+# 코드 없음. 정답 분할을 먼저 정하고 그에 맞는 실생활 상황을 작성한다.
+# 자동 검증 불가 → 구조 검증 + 사람 검수(verified=False). LLM이 문항 전체를 생성.
+SYSTEM_DECOMPOSITION = (
+    "너는 중·고생용 '분해(decomposition)' 비코드 문제의 '정답 분할'을 만드는 출제자다. 코드는 절대 쓰지 않는다.\n"
+    "분해 = 실생활 작업을 시간·논리 순서의 단계(하위 작업)로 나누는 것. "
+    "'왜 하는가(목적·의미)'는 넣지 마라(그건 통합). '작업을 어떻게 쪼개는가(구조 분할)'만.\n"
+    "intent-first — 먼저 올바른 분할을 정하고, 그 분할에 맞는 상황을 쓴다:\n"
+    "1. steps: 작업을 나눈 '올바른 순서'의 단계 3~5개. 각 단계는 짧은 동작 구절(예: '재료 준비하기'). "
+    "시간/논리 순서대로, 서로 겹치지 않게. (보기·오답은 시스템이 이 steps로 만든다)\n"
+    "2. situation: 그 단계대로 흘러가는, 중·고생에게 친숙한 실생활 상황 2~4문장. "
+    "단계 라벨을 그대로 베끼지 말고 자연스러운 이야기로 쓴다.\n"
+    "3. explanation: 그렇게 나눈 근거 1~2문장.\n"
+    "★ 너는 정답을 고르지 않는다. situation·steps·explanation만 출력하면 시스템이 정답·오답을 구성한다.\n"
+    '출력은 아래 JSON 객체 하나만(설명·코드펜스 금지):\n'
+    '{"situation": "실생활 상황 2~4문장", "steps": ["1단계 동작", "2단계 동작", "3단계 동작"], '
+    '"explanation": "이렇게 나눈 근거 1~2문장"}'
+)
+
+DECOMPOSITION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "situation":   {"type": "string"},
+        "steps":       {"type": "array", "minItems": 3, "maxItems": 5,
+                        "items": {"type": "string"}},
+        "explanation": {"type": "string"},
+    },
+    "required": ["situation", "steps", "explanation"],
+}
+
+DECOMPOSITION_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "decomposition", "strict": True, "schema": DECOMPOSITION_SCHEMA},
+}
+
+
+def call_decomposition_gen(templates: str = "") -> str:
+    """비코드 분해 문항(상황+분할 MCQ)을 intent-first로 생성. JSON 문자열 반환."""
+    system = SYSTEM_DECOMPOSITION
+    if templates:
+        system += f"\n\n[출제 참고 가이드]\n{templates}"
+    return _generate(
+        [{"role": "system", "content": system},
+         {"role": "user",   "content": "분해 비코드 문항을 JSON으로 출력하라."}],
+        TEMP_CREATIVE,
+        max_tokens=1536,
+        response_format=DECOMPOSITION_RESPONSE_FORMAT,
+    )
+
+
 # ── 분석 계열 (TEMP_PRECISE, history 미주입) ────────────────────────
 
 def call_log_analysis(log_text: str) -> str:

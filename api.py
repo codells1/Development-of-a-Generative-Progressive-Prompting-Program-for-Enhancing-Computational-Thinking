@@ -757,6 +757,210 @@ def _apply_execution_order(questions: list, code: str) -> list:
     return out
 
 
+# ══════════════════════════════════════════════════════════════════
+# 비코드 트랙 — 패턴인식(규칙 검증) · 분해(intent-first) (quiz_spec §4.B)
+# 패턴: 코드가 규칙(공차·공비·주기)으로 수열·정답·오답을 결정 → 자동 검증(LLM 미사용).
+# 분해: LLM이 intent-first로 저작 → 구조 검증 + 사람 검수(verified=False, 자동검증 불가).
+# 코드 트랙·_verify_one은 불변. 분해/패턴인식 슬롯만 교체(실패 시 코드형 폴백).
+# ══════════════════════════════════════════════════════════════════
+
+_PATTERN_SHOW = 4   # 보여줄 항 수(그다음 항이 정답)
+_PATTERN_DECOYS = ["◆", "★", "○", "□", "♠", "♥"]
+
+
+def _pattern_term(rule: dict, n: int):
+    """규칙으로 n번째(0-index) 항을 계산한다(자동 검증의 단일 출처)."""
+    t = rule["type"]
+    if t == "arithmetic":
+        return rule["start"] + rule["step"] * n
+    if t == "geometric":
+        return rule["start"] * (rule["ratio"] ** n)
+    if t == "cycle":
+        seq = rule["seq"]
+        return seq[n % len(seq)]
+    raise ValueError(f"알 수 없는 규칙: {t}")
+
+
+def _gen_pattern_rule() -> dict:
+    kind = random.choice(["arithmetic", "geometric", "cycle"])
+    if kind == "arithmetic":
+        return {"type": "arithmetic", "start": random.randint(1, 9),
+                "step": random.choice([2, 3, 4, 5, 6, 10]), "label": "일정한 수를 더하는"}
+    if kind == "geometric":
+        return {"type": "geometric", "start": random.choice([1, 2, 3]),
+                "ratio": random.choice([2, 3]), "label": "일정한 수를 곱하는"}
+    base = random.choice([["▲", "●", "■"], ["●", "■", "▲", "◆"], ["1", "2", "3"], ["가", "나", "다"]])
+    return {"type": "cycle", "seq": base, "label": "주기적으로 반복되는"}
+
+
+def _pattern_distractors(rule: dict, shown: list, answer):
+    """규칙별 흔한 오개념 오답 3개(정답과 상이·상호 유일). quiz_spec §4.B."""
+    seen, out = {answer}, []
+    if rule["type"] == "cycle":
+        pool = [s for s in dict.fromkeys(rule["seq"]) if s != answer]
+        pool += [d for d in _PATTERN_DECOYS if d not in rule["seq"]]
+    elif rule["type"] == "arithmetic":
+        d = rule["step"]
+        pool = [answer + d, answer - d, answer + 1, answer - 1,
+                shown[-1] + (shown[-1] - shown[-2])]   # 등차↔등비 혼동류
+    else:  # geometric
+        r = rule["ratio"]
+        pool = [shown[-1], answer * r, answer + 1, answer - 1,
+                shown[-1] + (shown[-1] - shown[-2])]    # 등비를 등차로 착각
+    for v in pool:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+        if len(out) == 3:
+            break
+    return out
+
+
+def _build_pattern_question():
+    """비코드 패턴인식 문항 1개. 규칙으로 수열·정답·오답을 결정(자동 검증 가능)."""
+    rule = _gen_pattern_rule()
+    show_n = (max(_PATTERN_SHOW, len(rule["seq"]) + 1) if rule["type"] == "cycle"
+              else _PATTERN_SHOW)
+    shown = [_pattern_term(rule, i) for i in range(show_n)]
+    answer = _pattern_term(rule, show_n)
+    distractors = _pattern_distractors(rule, shown, answer)
+    if len(distractors) < 3:
+        return None
+    sep = " " if rule["type"] == "cycle" else ", "
+    disp = sep.join(str(x) for x in shown) + sep + "?"
+    cands = [str(answer)] + [str(d) for d in distractors]
+    order = list(range(4))
+    random.shuffle(order)
+    shuffled = [cands[i] for i in order]
+    options = [f"{chr(65 + i)}. {s}" for i, s in enumerate(shuffled)]
+    answer_label = chr(65 + order.index(0))
+    stem = (f"다음은 {rule['label']} 규칙으로 이어지는 나열이에요. "
+            f"?에 들어갈 것으로 알맞은 것은?\n{disp}")
+    return {
+        "ct_skill":     "패턴인식",
+        "question":     stem,
+        "options":      options,
+        "answer":       answer_label,
+        "answer_type":  "conceptual",
+        "type":         "pattern",
+        "track":        "noncode",
+        "verify_method": "rule",
+        "verified":     True,
+        "explanation":  f"앞의 항들을 보면 {rule['label']} 규칙이에요. "
+                        "그 규칙을 다음에 그대로 적용한 것이 정답이에요.",
+        "focus_points": ["앞의 항끼리 어떻게 변하는지(더하기·곱하기·반복) 살펴보기",
+                         "찾은 규칙을 다음 항에 그대로 적용하기"],
+        "_pattern_rule":   rule,
+        "_pattern_answer": str(answer),
+    }
+
+
+def _verify_pattern_question(q: dict) -> bool:
+    """규칙으로 정답 항을 재계산해 보기와 일치하는지 자동 검증(quiz_spec §4.B)."""
+    if not q or q.get("type") != "pattern":
+        return False
+    opts = q.get("options", [])
+    if len(opts) != 4 or len({o.split(". ", 1)[-1] for o in opts}) != 4:
+        return False
+    rule = q.get("_pattern_rule")
+    if not rule:
+        return False
+    show_n = (max(_PATTERN_SHOW, len(rule["seq"]) + 1) if rule["type"] == "cycle"
+              else _PATTERN_SHOW)
+    recomputed = str(_pattern_term(rule, show_n))
+    ans_opt = next((o for o in opts if o.startswith(q.get("answer", "") + ".")), "")
+    return ans_opt.split(". ", 1)[-1] == recomputed and recomputed == q.get("_pattern_answer")
+
+
+def _decomp_distractors(steps: list) -> list:
+    """정답 단계 순서에서 흔한 오개념 오답(순서 바꾸기·단계 합치기[누락]·역순)을 만든다.
+    정답(steps 원순서)과 다르고 상호 유일. quiz_spec §4.B."""
+    seen, out = {tuple(steps)}, []
+
+    def add(seq):
+        t = tuple(seq)
+        if len(t) >= 2 and t not in seen:
+            seen.add(t)
+            out.append(list(seq))
+
+    for i in range(len(steps) - 1):              # 인접 두 단계 순서 바꾸기
+        m = steps[:]
+        m[i], m[i + 1] = m[i + 1], m[i]
+        add(m)
+    for i in range(len(steps)):                  # 한 단계 빼기(두 단계 합치기 → 단계 수 -1)
+        add(steps[:i] + steps[i + 1:])
+    if len(steps) >= 3:                          # 역순
+        add(steps[::-1])
+    return out
+
+
+def _build_decomposition_question(templates: str = ""):
+    """비코드 분해 문항 1개. LLM은 intent-first로 '정답 단계(steps)'만 저작하고,
+    정답 보기·오답은 코드가 steps로 구성한다(정답이 구조적으로 확정 → MCQ 내적 일관).
+    단, steps가 상황을 올바로 분해했는지는 자동 검증 불가 → verified=False(사람 검수).
+    실패 시 None(→ 코드형 폴백)."""
+    for attempt in range(VERIFY_RETRY_LIMIT):
+        try:
+            raw = llm.call_decomposition_gen(templates)
+            d = json.loads(_slice_first_json(raw), strict=False)
+        except Exception as e:
+            print(f"[decomposition] {attempt + 1}/{VERIFY_RETRY_LIMIT} 파싱 실패 — {e}")
+            continue
+        situation = (d.get("situation") or "").strip()
+        steps = [s.strip() for s in (d.get("steps") or []) if isinstance(s, str) and s.strip()]
+        if not situation or not (3 <= len(steps) <= 5) or len(set(steps)) != len(steps):
+            continue
+        distractors = _decomp_distractors(steps)
+        cands = [steps] + distractors[:3]
+        opt_texts = [" → ".join(x) for x in cands]
+        if len(set(opt_texts)) != 4:             # 보기 4개가 모두 서로 달라야(정답 유일)
+            continue
+        order = list(range(4))
+        random.shuffle(order)
+        shuffled = [opt_texts[i] for i in order]
+        options = [f"{chr(65 + i)}. {s}" for i, s in enumerate(shuffled)]
+        answer = chr(65 + order.index(0))        # 정답 = 원순서 steps (구조적으로 확정)
+        return {
+            "ct_skill":     "분해",
+            "question":     f"{situation}\n\n이 일을 순서대로 단계로 나눈 것으로 알맞은 것은?",
+            "options":      options,
+            "answer":       answer,
+            "answer_type":  "conceptual",
+            "type":         "decomposition",
+            "track":        "noncode",
+            "verify_method": "authored",   # 단계 자체의 타당성은 사람 검수(자동 검증 불가)
+            "verified":     False,         # quiz_spec §4.B·§9 — 사람 검수 권장
+            "explanation":  (d.get("explanation") or "").strip(),
+            "focus_points": ["작업을 시간·논리 순서의 단계로 나눠 보기",
+                             "단계의 순서가 바뀌거나 빠진 보기를 가려내기"],
+            "_decomp_steps": steps,
+        }
+    print(f"[decomposition] {VERIFY_RETRY_LIMIT}회 실패 → 기존 코드 문항 유지")
+    return None
+
+
+def _apply_noncode_questions(questions: list) -> list:
+    """분해·패턴인식 슬롯을 비코드 문항으로 교체. 실패 시 기존 코드 문항 유지(회귀 0).
+    패턴인식=규칙 자동검증, 분해=구조검증+사람검수(verified=False)."""
+    out = []
+    for q in questions:
+        sk = q.get("ct_skill")
+        nq = None
+        if sk == "패턴인식":
+            nq = _build_pattern_question()
+            if nq and not _verify_pattern_question(nq):
+                nq = None
+        elif sk == "분해":
+            nq = _build_decomposition_question()
+        if nq:
+            out.append(nq)
+            continue
+        if sk in ("패턴인식", "분해"):
+            print(f"[noncode {sk}] 생성/검증 실패 → 기존 코드 문항 유지")
+        out.append(q)
+    return out
+
+
 def _student_safe_questions(questions: list) -> list:
     """학생 응답용 문항 필드만 추린다. 내부 전용 필드(focus_points 등)는 제외."""
     return [
@@ -911,7 +1115,9 @@ def generate_problem():
     # 알고리즘적사고 슬롯을 '실행 순서 고르기'(트레이스 검증)로 교체(실패 시 코드형 유지).
     # process_questions보다 먼저 — 교체된 conceptual 문항이 스킵되지 않고 통과하도록.
     reconciled = _apply_execution_order(reconciled, code)
-    # 문항별 검증 + 실패시 단일 문항 재생성/스킵 (실행순서 문항은 conceptual이라 그대로 통과)
+    # 분해·패턴인식 슬롯을 비코드 문항으로 교체(패턴=규칙 자동검증, 분해=intent-first). 실패 시 코드형.
+    reconciled = _apply_noncode_questions(reconciled)
+    # 문항별 검증 + 실패시 단일 문항 재생성/스킵 (비코드·실행순서는 conceptual이라 그대로 통과)
     final_questions = _process_questions(reconciled, code, templates)
     _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
     return jsonify({
@@ -965,7 +1171,9 @@ def session_start():
     # 알고리즘적사고 슬롯을 '실행 순서 고르기'(트레이스 검증)로 교체(실패 시 코드형 유지).
     # process_questions보다 먼저 — 교체된 conceptual 문항이 스킵되지 않고 통과하도록.
     reconciled = _apply_execution_order(reconciled, code)
-    # 문항별 검증 + 실패시 단일 문항 재생성/스킵 (실행순서 문항은 conceptual이라 그대로 통과)
+    # 분해·패턴인식 슬롯을 비코드 문항으로 교체(패턴=규칙 자동검증, 분해=intent-first). 실패 시 코드형.
+    reconciled = _apply_noncode_questions(reconciled)
+    # 문항별 검증 + 실패시 단일 문항 재생성/스킵 (비코드·실행순서는 conceptual이라 그대로 통과)
     final_questions = _process_questions(reconciled, code, templates)
     session_id = _gen_session_id()
     _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
