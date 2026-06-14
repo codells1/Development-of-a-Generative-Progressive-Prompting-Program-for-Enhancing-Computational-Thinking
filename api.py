@@ -228,6 +228,25 @@ def _latest_feedback(session_id: str) -> dict | None:
         return None
 
 
+def _options_ok(opts) -> bool:
+    """보기 4개가 정상인지 — 4개·비어있지 않음·서로 다름·한 보기에 여러 보기가 몰리지 않음.
+    9B 모델이 가끔 보기 4개를 한 칸에 다 몰아넣고 나머지 칸을 garbage(answer_type… 등)로
+    채우는 손상 출력을 감지한다(스키마는 '문자열 4개'만 강제하므로 못 거름)."""
+    if not (isinstance(opts, list) and len(opts) == 4):
+        return False
+    bodies = [str(o).strip() for o in opts]
+    if any(not b for b in bodies):
+        return False
+    if len(set(bodies)) != 4:                      # 손상 시 같은 garbage가 반복됨
+        return False
+    for o in bodies:
+        if "answer_type" in o:                      # 필드명 누출
+            return False
+        if len(re.findall(r"(?:^|\s)[A-D][.)]\s", o)) >= 2:   # 한 보기 안에 여러 보기 라벨
+            return False
+    return True
+
+
 def _validate_question(q: dict, label: str = "문항") -> None:
     """문항 1개의 필드·구조를 검증한다. 실패 시 ValueError.
     세트 생성(_parse_problem_set)과 단일 재생성(_parse_single_problem)이 공유하는
@@ -470,6 +489,9 @@ def _regenerate_question(ct_skill: str, code: str, templates: str, log_label: st
             if raw is not None:
                 print(f"[regen {tag}] 원본 응답 ↓↓↓\n{raw}\n[regen {tag}] 원본 응답 ↑↑↑")
             continue
+        if not _options_ok(new_q.get("options", [])):   # 재생성도 보기 손상이면 다시 시도
+            print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 보기 손상 — 재시도")
+            continue
         ok, detail = _verify_one(new_q, code)
         if ok:
             print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 성공 — {detail}")
@@ -518,12 +540,25 @@ def _process_questions(questions: list, code: str, templates: str) -> list:
     """
     out = []
     for i, q in enumerate(questions):
+        ct_skill = q.get("ct_skill", "")
+        # 코드로 만든 특수 유형(실행순서·패턴·분해)은 보기를 코드가 구성하므로 손상 검사·재생성 제외.
+        is_special = q.get("type") in ("execution_order", "pattern", "decomposition")
+
+        # 코드 MCQ 보기 손상(전부 한 칸에 몰림·중복·필드명 누출) → 단일 재생성
+        if not is_special and not _options_ok(q.get("options", [])):
+            print(f"[options q{i} {ct_skill}] 보기 손상 → 단일 재생성")
+            replaced = _regenerate_question(ct_skill, code, templates, log_label=f"q{i} ")
+            if replaced is not None:
+                out.append(replaced)
+            else:
+                print(f"[skip q{i} {ct_skill}] 보기 손상 재생성 실패 → 문항 제외")
+            continue
+
         ok, detail = _verify_one(q, code)
         if ok:
             out.append(q)
             continue
 
-        ct_skill = q.get("ct_skill", "")
         print(f"[verify q{i} {ct_skill}] 초기 실패 — {detail}")
         replaced = _regenerate_question(ct_skill, code, templates, log_label=f"q{i} ")
         if replaced is not None:
