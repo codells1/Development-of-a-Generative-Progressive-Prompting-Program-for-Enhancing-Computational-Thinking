@@ -37,17 +37,19 @@ CODE_TOPIC_HINTS = (
 # 코드·문제 난이도를 한 수준으로 통일한다 (클라이언트 입력과 무관하게 서버에서 고정).
 TARGET_DIFFICULTY = "중학교 3학년~고등학교 1학년"
 
-# CT 평가 7요소 (prompts/ct_evaluation_rubric.md). 하나의 그룹 — 패턴인식 제외, 자기해결 포함.
-# (id, LLM JSON 키, 화면 표시명). 순서 = 화면 표시 순서. 숫자 총점은 만들지 않는다(학생 비노출).
+# CT 평가 4요소 (prompts/ct_evaluation_rubric.md). (id, 화면 표시명, SRL여부).
+# 모델이 elements 배열을 직접 출력하므로 flat JSON 키는 더 쓰지 않는다.
+# CT 총점(내부) = 문제분해+추상화+실행흐름(srl=False). 자기해결은 SRL 지표로 별도 기록(총점 제외).
+# 관련 발화가 없는 요소는 모델이 elements에서 생략 → 가변 길이 배열. "NA" 미사용.
 CT_ELEMENTS = (
-    ("decomposition",          "문제분해", "문제 분해"),
-    ("terminology",            "용어사용", "용어 사용"),
-    ("abstraction",            "추상화",   "추상화"),
-    ("control_flow",           "실행흐름", "실행 흐름"),
-    ("data_representation",    "자료표현", "자료 표현"),
-    ("behavior_comprehension", "동작파악", "동작 파악"),
-    ("self_resolution",        "자기해결", "자기 해결"),
+    ("decomposition",   "문제 분해", False),
+    ("abstraction",     "추상화",   False),
+    ("control_flow",    "실행 흐름", False),
+    ("self_resolution", "자기 해결", True),   # SRL — CT 총점 제외
 )
+_CT_ORDER     = [eid for eid, _name, _srl in CT_ELEMENTS]          # 화면 표시 순서
+_ELID_TO_NAME = {eid: name for eid, name, _srl in CT_ELEMENTS}     # id → 표시명
+_SRL_IDS      = {eid for eid, _name, srl in CT_ELEMENTS if srl}    # SRL 요소 id
 
 # 문제 출제용 5유형 (분석용 CT 루브릭 지표와 별개). 순서 고정 — 분해→통합.
 PROBLEM_CT_SKILLS = ("분해", "패턴인식", "추상화", "알고리즘적사고", "통합")
@@ -105,33 +107,6 @@ def _extract_json(raw: str) -> dict:
     return json.loads(_slice_first_json(raw), strict=False)
 
 
-_GRADE_MAP = {"상": 3, "중": 2, "하": 1, "우수": 3, "보통": 2, "미흡": 1}
-
-
-def _norm_rubric_score(value):
-    """루브릭 점수 1칸을 정규화한다. 상/중/하·우수/보통/미흡 또는 1~3 정수 → 1~3,
-    N/A·무효값이면 None."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        s = value.strip()
-        if s in _GRADE_MAP:
-            return _GRADE_MAP[s]
-        su = s.upper()
-        if su in ("", "N/A", "NA", "NONE", "-"):
-            return None
-        try:
-            value = int(float(su))
-        except ValueError:
-            return None
-    try:
-        iv = int(value)
-    except (ValueError, TypeError):
-        return None
-    return max(1, min(3, iv))
-
-
-_NUM_TO_GRADE = {3: "상", 2: "중", 1: "하"}
 NARRATIVE_CHAR_LIMIT = 240   # 서술 피드백 상한(공백 포함). 사양 권장 150~220 + 약간의 여유.
 
 
@@ -148,14 +123,13 @@ def _clamp_narrative(text: str) -> str:
 
 
 _VALID_GRADES = {"상", "중", "하"}
-# LLM JSON 키(예: "실행흐름") → 화면 표시명(예: "실행 흐름"). 근거 항목의 요소 매핑용.
-_ELKEY_TO_NAME = {key: name for _id, key, name in CT_ELEMENTS}
 _HIGHLIGHT_LIMIT = 6
 
 
 def _norm_highlights(raw_list) -> list:
     """루브릭의 '근거' 배열을 화면용으로 정리한다.
     각 항목 = {quote(학생 발화 인용), element(요소 표시명), grade(상/중/하), reason(한 줄)}.
+    요소(요소/element)는 id(decomposition 등)로 오므로 표시명으로 매핑.
     발화가 비었거나 등급이 상/중/하가 아니면 버린다. 최대 _HIGHLIGHT_LIMIT개."""
     out = []
     if not isinstance(raw_list, list):
@@ -175,7 +149,7 @@ def _norm_highlights(raw_list) -> list:
             continue
         out.append({
             "quote":   quote,
-            "element": _ELKEY_TO_NAME.get(el, el),   # 키면 표시명으로, 이미 표시명이면 그대로
+            "element": _ELID_TO_NAME.get(el, el),   # id면 표시명으로, 이미 표시명이면 그대로
             "grade":   grade,
             "reason":  reason,
         })
@@ -186,19 +160,32 @@ def _norm_highlights(raw_list) -> list:
 
 def score_ct(ct_raw: dict) -> dict:
     """
-    루브릭 원시 채점 결과(ct_raw)를 7요소 상/중/하/NA + 서술 피드백 + 평가 근거로 정리한다.
+    루브릭 원시 채점 결과(ct_raw)를 4요소 상/중/하(측정된 것만) + 서술 피드백 + 평가 근거로 정리한다.
+    - 새 형식: 모델이 elements 배열을 직접 출력(id·name·grade·srl). 발화 없는 요소는 생략(NA 없음).
+    - 여기서는 알려진 id·유효 등급만 통과시키고, 표시명·SRL 플래그를 코드가 채워 순서를 고정한다.
     - 숫자 총점은 만들지 않는다(학생 화면 비노출 사양).
-    - 각 요소 grade ∈ "상"|"중"|"하"|"NA". elements 순서 = 화면 표시 순서(7개 고정).
     - highlights: 학생 발화 인용 + 요소·등급·이유 (대화의 어느 부분이 어떻게 평가됐는지).
     LLM 비의존 — 순수 함수라 단독 검증 가능.
     """
-    elements = []
-    for el_id, key, name in CT_ELEMENTS:
-        n = _norm_rubric_score(ct_raw.get(key))
-        elements.append({"id": el_id, "name": name, "grade": _NUM_TO_GRADE.get(n, "NA")})
+    raw_elems = ct_raw.get("elements")
+    by_id = {}
+    if isinstance(raw_elems, list):
+        for e in raw_elems:
+            if not isinstance(e, dict):
+                continue
+            eid   = str(e.get("id") or "").strip()
+            grade = str(e.get("grade") or "").strip()
+            if eid in _ELID_TO_NAME and grade in _VALID_GRADES and eid not in by_id:
+                by_id[eid] = grade
+    # 측정된 요소만, 표준 순서로. 표시명·SRL은 코드가 권위 있게 채운다.
+    elements = [
+        {"id": eid, "name": _ELID_TO_NAME[eid], "grade": by_id[eid], "srl": eid in _SRL_IDS}
+        for eid in _CT_ORDER if eid in by_id
+    ]
     return {
         "elements":           elements,
-        "narrative_feedback": _clamp_narrative(ct_raw.get("feedback") or ""),
+        "narrative_feedback": _clamp_narrative(
+            ct_raw.get("narrative_feedback") or ct_raw.get("feedback") or ""),
         "highlights":         _norm_highlights(ct_raw.get("근거") or ct_raw.get("highlights")),
     }
 
