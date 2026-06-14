@@ -374,10 +374,13 @@ SYSTEM_DECOMPOSITION = (
     "너는 중·고생용 '분해(decomposition)' 비코드 문제의 '정답 분할'을 만드는 출제자다. 코드는 절대 쓰지 않는다.\n"
     "분해 = 실생활 작업을 시간·논리 순서의 단계(하위 작업)로 나누는 것. "
     "'왜 하는가(목적·의미)'는 넣지 마라(그건 통합). '작업을 어떻게 쪼개는가(구조 분할)'만.\n"
+    "★ [참고 코드]가 주어지면, 그 코드가 '하는 일'과 관련된 실생활 상황으로 만든다 "
+    "(예: 코드가 가격·할인을 계산하면 → 가게에서 물건값을 치르는 과정, 코드가 점수를 합산·등급화하면 → 시험 채점 과정). "
+    "단, 코드·변수명·함수명·파이썬 용어는 문제에 절대 드러내지 마라. 학생은 코드 없이 '상황'만 본다.\n"
     "intent-first — 먼저 올바른 분할을 정하고, 그 분할에 맞는 상황을 쓴다:\n"
     "1. steps: 작업을 나눈 '올바른 순서'의 단계 3~5개. 각 단계는 짧은 동작 구절(예: '재료 준비하기'). "
     "시간/논리 순서대로, 서로 겹치지 않게. (보기·오답은 시스템이 이 steps로 만든다)\n"
-    "2. situation: 그 단계대로 흘러가는, 중·고생에게 친숙한 실생활 상황 2~4문장. "
+    "2. situation: 그 단계대로 흘러가는, 코드 소재와 관련된 실생활 상황 2~4문장. "
     "단계 라벨을 그대로 베끼지 말고 자연스러운 이야기로 쓴다.\n"
     "3. explanation: 그렇게 나눈 근거 1~2문장.\n"
     "★ 너는 정답을 고르지 않는다. situation·steps·explanation만 출력하면 시스템이 정답·오답을 구성한다.\n"
@@ -404,14 +407,18 @@ DECOMPOSITION_RESPONSE_FORMAT = {
 }
 
 
-def call_decomposition_gen(templates: str = "") -> str:
-    """비코드 분해 문항(상황+분할 MCQ)을 intent-first로 생성. JSON 문자열 반환."""
+def call_decomposition_gen(code: str = "", templates: str = "") -> str:
+    """비코드 분해 문항(상황+정답 단계)을 intent-first로 생성. JSON 문자열 반환.
+    code: 소재 참고용(코드가 다루는 일과 관련된 상황을 만들되 코드는 노출하지 않는다)."""
     system = SYSTEM_DECOMPOSITION
     if templates:
         system += f"\n\n[출제 참고 가이드]\n{templates}"
+    user = "분해 비코드 문항을 JSON으로 출력하라."
+    if code:
+        user += ("\n\n[참고 코드 — 소재(주제)만 참고하고 문제에는 절대 노출하지 마라]\n" + code)
     return _generate(
         [{"role": "system", "content": system},
-         {"role": "user",   "content": "분해 비코드 문항을 JSON으로 출력하라."}],
+         {"role": "user",   "content": user}],
         TEMP_CREATIVE,
         max_tokens=1536,
         response_format=DECOMPOSITION_RESPONSE_FORMAT,

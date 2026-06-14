@@ -39,9 +39,21 @@ def test_pattern_answer_is_rule_computed():
     rule = q["_pattern_rule"]
     show_n = (max(api._PATTERN_SHOW, len(rule["seq"]) + 1)
               if rule["type"] == "cycle" else api._PATTERN_SHOW)
-    expect = str(api._pattern_term(rule, show_n))
+    expect = api._pattern_cell_str(rule, show_n)        # 단위까지 포함한 표시 문자열
     ans_body = next(o.split(". ", 1)[-1] for o in q["options"] if o.startswith(q["answer"] + "."))
     assert ans_body == expect == q["_pattern_answer"]
+
+
+def test_pattern_uses_code_theme_unit():
+    # 코드에 '원'이 있으면 가격 맥락 + 모든 보기에 '원' 단위가 붙고, 규칙 검증도 통과
+    code = "def total_price(items):\n    s = 0\n    for p in items:\n        s += p\n    print(f'{s}원')\n"
+    for _ in range(20):
+        q = api._build_pattern_question(code)
+        assert q is not None
+        assert "가격" in q["question"]                  # 코드 소재(가격) 맥락
+        bodies = [o.split(". ", 1)[-1] for o in q["options"]]
+        assert all(b.endswith("원") for b in bodies), bodies   # 단위 일관
+        assert api._verify_pattern_question(q) is True   # 규칙 자동검증 여전히 통과
 
 
 def test_pattern_verify_rejects_tampered():
@@ -69,7 +81,7 @@ def test_decomp_distractors_distinct():
 
 def test_build_decomposition_answer_is_canonical_steps():
     orig = api.llm.call_decomposition_gen
-    api.llm.call_decomposition_gen = lambda templates="": _GOOD_DECOMP
+    api.llm.call_decomposition_gen = lambda code="", templates="": _GOOD_DECOMP
     try:
         q = api._build_decomposition_question()
     finally:
@@ -88,7 +100,7 @@ def test_build_decomposition_answer_is_canonical_steps():
 
 def test_build_decomposition_rejects_bad():
     orig = api.llm.call_decomposition_gen
-    api.llm.call_decomposition_gen = lambda templates="": '{"steps": ["하나만"]}'  # 단계 부족
+    api.llm.call_decomposition_gen = lambda code="", templates="": '{"steps": ["하나만"]}'  # 단계 부족
     try:
         q = api._build_decomposition_question()
     finally:
@@ -100,7 +112,7 @@ def test_build_decomposition_rejects_bad():
 
 def test_apply_noncode_replaces_pattern_and_decomp():
     orig = api.llm.call_decomposition_gen
-    api.llm.call_decomposition_gen = lambda templates="": _GOOD_DECOMP
+    api.llm.call_decomposition_gen = lambda code="", templates="": _GOOD_DECOMP
     qs = [{"ct_skill": s, "question": "code-q", "options": ["A.x", "B.y", "C.z", "D.w"],
            "answer": "A", "answer_type": "conceptual"}
           for s in ("분해", "패턴인식", "추상화", "알고리즘적사고", "통합")]
