@@ -187,8 +187,12 @@ _init()
 
 # ── 공개 API ───────────────────────────────────────────────────
 
-def retrieve(collection: str, query: str, k: int = TOP_K) -> str:
-    """query와 유사한 청크 k개를 반환. 인덱스 없으면 ''."""
+def retrieve(collection: str, query: str, k: int = TOP_K, filter: dict = None) -> str:
+    """query와 유사한 청크 k개를 반환. 인덱스 없으면 ''.
+
+    filter: 메타데이터 필터(검색 조건화, quiz_spec §7). 예: {"source_file": "ct_분해.txt"}
+            → 해당 파일에서 임베딩된 청크만 검색(같은 유형 코퍼스만 retrieve).
+            엔진·인덱싱은 그대로 두고 similarity_search에 그대로 전달만 한다."""
     if not _AVAILABLE:
         return ""
     _check(collection)
@@ -196,7 +200,7 @@ def retrieve(collection: str, query: str, k: int = TOP_K) -> str:
     if store is None:
         return ""
     try:
-        docs = store.similarity_search(query, k=k)
+        docs = store.similarity_search(query, k=k, filter=filter)
         return "\n---\n".join(d.page_content for d in docs)
     except Exception as e:
         logging.warning(f"[RAG] retrieve 오류: {e}")

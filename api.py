@@ -864,6 +864,21 @@ def generate_code():
     return jsonify({"code": code, "topic": topic})
 
 
+def _retrieve_templates(code: str) -> str:
+    """CT 5유형별 출제 가이드를 검색해 합친다.
+    quiz_spec §7 — type 필터: 각 유형은 자기 코퍼스(ct_{유형}.txt)에서만 retrieve해
+    코드형/비코드 코퍼스가 유형 간에 섞이지 않게 한다(검색 조건화, 인덱싱 불변)."""
+    parts = []
+    for skill in PROBLEM_CT_SKILLS:
+        chunk = rag_store.retrieve(
+            "problem_templates", f"{skill} {code[:200]}", k=2,
+            filter={"source_file": f"ct_{skill}.txt"},
+        )
+        if chunk:
+            parts.append(f"[{skill}]\n{chunk}")
+    return "\n\n".join(parts)
+
+
 @api.route("/generate-problem", methods=["POST"])
 def generate_problem():
     """한 번 호출로 MCQ 5문항 세트를 생성한다 (분해→통합 순)."""
@@ -874,13 +889,8 @@ def generate_problem():
     difficulty = TARGET_DIFFICULTY   # 난이도 통일 (클라이언트 입력 무시)
     session_id = (data.get("session_id") or "").strip()
 
-    # 5유형별로 RAG 가이드를 따로 검색해 합친다 (한 쿼리에 5유형 섞으면 편향됨)
-    template_parts = []
-    for skill in PROBLEM_CT_SKILLS:
-        chunk = rag_store.retrieve("problem_templates", f"{skill} {code[:200]}", k=2)
-        if chunk:
-            template_parts.append(f"[{skill}]\n{chunk}")
-    templates = "\n\n".join(template_parts)
+    # 5유형별로 RAG 가이드를 type 필터로 따로 검색해 합친다 (유형별 코퍼스 분리)
+    templates = _retrieve_templates(code)
 
     # 세트 단위 파싱 재시도 (구조 깨졌을 때만)
     parsed = None
@@ -933,13 +943,8 @@ def session_start():
     except Exception as e:
         return jsonify({"error": f"코드 생성 실패: {e}"}), 503
 
-    # Stage 2 — 5유형별 RAG 가이드 합치고 MCQ 5문항 일괄 생성
-    template_parts = []
-    for skill in PROBLEM_CT_SKILLS:
-        chunk = rag_store.retrieve("problem_templates", f"{skill} {code[:200]}", k=2)
-        if chunk:
-            template_parts.append(f"[{skill}]\n{chunk}")
-    templates = "\n\n".join(template_parts)
+    # Stage 2 — 5유형별 RAG 가이드(type 필터)를 합치고 MCQ 5문항 일괄 생성
+    templates = _retrieve_templates(code)
 
     # 세트 단위 파싱 재시도 (구조 깨졌을 때만)
     parsed = None
