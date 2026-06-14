@@ -547,6 +547,216 @@ def _process_questions(questions: list, code: str, templates: str) -> list:
     return out
 
 
+# ══════════════════════════════════════════════════════════════════
+# 코드 트랙 — '실행 순서 고르기' (quiz_spec.md §4.A 우선순위 1)
+# 원칙: 정답·보기를 LLM이 아니라 '실행 트레이스 + 코드'로 결정(100% 결정적).
+# 알고리즘적사고 슬롯을 교체하며, 실패 시 기존 코드 문항으로 폴백(회귀 0).
+# 기존 _verify_one(스니펫 실행검증)은 건드리지 않는다(answer_type='conceptual'로 우회).
+# ══════════════════════════════════════════════════════════════════
+
+EXEC_TRACE_TIMEOUT = 2          # 트레이스 실행 타임아웃(초) — quiz_spec §8
+_CIRCLED = "①②③④⑤⑥⑦⑧"
+
+# settrace로 <usercode> 프레임의 'line' 이벤트 줄번호만 순서대로 수집하는 러너.
+_TRACER_RUNNER = (
+    "import sys, json, io, contextlib\n"
+    "_USERCODE = {code!r}\n"
+    "_seq = []\n"
+    "def _tr(frame, event, arg):\n"
+    "    if frame.f_code.co_filename == '<usercode>':\n"
+    "        if event == 'line':\n"
+    "            _seq.append(frame.f_lineno)\n"
+    "        return _tr\n"
+    "    return None\n"
+    "try:\n"
+    "    _compiled = compile(_USERCODE, '<usercode>', 'exec')\n"
+    "    sys.settrace(_tr)\n"
+    "    with contextlib.redirect_stdout(io.StringIO()):\n"
+    "        exec(_compiled, {{'__name__': '__main__'}})\n"
+    "except Exception as _e:\n"
+    "    sys.settrace(None)\n"
+    "    print('TRACE_ERROR:' + repr(_e))\n"
+    "    sys.exit(2)\n"
+    "finally:\n"
+    "    sys.settrace(None)\n"
+    "print(json.dumps(_seq))\n"
+)
+
+
+def _run_tracer(code: str):
+    """code를 격리 subprocess에서 settrace로 실행해 줄번호 실행 순서(list[int])를 반환.
+    실패·타임아웃·런타임에러면 None. (_run_verification_snippet과 같은 격리·타임아웃 패턴)"""
+    program = _TRACER_RUNNER.format(code=code)
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8")
+    try:
+        tmp.write(program)
+        tmp.close()
+        result = subprocess.run(
+            [sys.executable, tmp.name], capture_output=True, text=True,
+            timeout=EXEC_TRACE_TIMEOUT, encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    if result.returncode != 0:
+        return None
+    last = (result.stdout or "").strip().splitlines()
+    if not last:
+        return None
+    try:
+        seq = json.loads(last[-1])
+    except (ValueError, IndexError):
+        return None
+    return seq if isinstance(seq, list) and all(isinstance(x, int) for x in seq) else None
+
+
+def _labelable_linenos(code: str) -> set:
+    """라벨 가능한 줄 = AST상 '실행문(statement)'의 시작 줄.
+    함수/클래스 정의·import는 제외. 다중행 데이터 리터럴(list/dict의 항목 줄 등)은
+    한 statement의 일부라 시작 줄 하나만 들어가므로, 데이터 나열이 라벨을 잠식하지 않는다."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    skip = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)
+    return {node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.stmt) and not isinstance(node, skip)}
+
+
+# 실행 순서 고르기는 '처음 실행되는 순서'(앞 N개 실행문의 first-occurrence 순열)로 출제한다.
+# 실제 생성 코드는 함수+루프로 전체 트레이스가 수십 스텝이라 MCQ에 부적합하므로,
+# 함수 정의보다 호출이 먼저 실행되는 등 '줄 번호 순서 ≠ 실행 순서'를 묻는 순열 문항으로 한다.
+_EXEC_PICK = 4   # 보기에 쓸 줄 개수(처음 실행되는 앞 N개)
+
+
+def _first_exec_order(trace: list, label_lines: set) -> list:
+    """라벨 대상 줄을 '처음 실행되는' 순서로 중복 없이 나열한 줄번호 리스트."""
+    seen, order = set(), []
+    for ln in trace:
+        if ln in label_lines and ln not in seen:
+            seen.add(ln)
+            order.append(ln)
+    return order
+
+
+def _perm_distractors(answer: tuple) -> list:
+    """순열 정답에서 두 위치를 바꾼 오답 순열들(정답과 상이·상호 유일)."""
+    a = list(answer)
+    seen, out = {tuple(answer)}, []
+    for i in range(len(a)):
+        for j in range(i + 1, len(a)):
+            m = a[:]
+            m[i], m[j] = m[j], m[i]
+            t = tuple(m)
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+    return out
+
+
+def _build_execution_order(code: str):
+    """실행 순서 고르기 문항 1개. 트레이스→처음 실행 순서→라벨→오답→셔플.
+    줄번호 순서와 실행 순서가 같거나(너무 쉬움) 부적합하면 None(→ 코드형 폴백)."""
+    code = _clean_code(code)         # 코드 사이 마크다운 잔재(--- 등) 제거 → compile 가능하게
+    trace = _run_tracer(code)
+    if not trace:
+        return None
+    src_lines = code.split("\n")
+    label_lines = _labelable_linenos(code)
+    first_order = _first_exec_order(trace, label_lines)
+    if len(first_order) < _EXEC_PICK:
+        return None
+    chosen_exec = first_order[:_EXEC_PICK]        # 처음 실행되는 앞 N줄(= 실행 순서)
+    by_source = sorted(chosen_exec)               # 소스(줄번호) 순서 = 라벨 ①②③④
+    label = {ln: i for i, ln in enumerate(by_source)}
+    answer = tuple(label[ln] for ln in chosen_exec)   # 실행 순서를 라벨로
+    if answer == tuple(range(len(by_source))):    # 줄번호 순 == 실행 순 → 너무 쉬움 → 폴백
+        return None
+    distractors = _perm_distractors(answer)
+    if len(distractors) < 3:
+        return None
+    cands = [answer] + distractors[:3]
+
+    def fmt(t):
+        return " → ".join(_CIRCLED[i] for i in t)
+
+    order = list(range(4))
+    random.shuffle(order)
+    shuffled = [cands[i] for i in order]
+    options = [f"{chr(65 + i)}. {fmt(t)}" for i, t in enumerate(shuffled)]
+    answer_label = chr(65 + order.index(0))
+
+    labeled = "\n".join(f"{_CIRCLED[i]} {src_lines[ln - 1].strip()}"
+                        for i, ln in enumerate(by_source))
+    stem = ("다음 코드에서 아래 ①~④ 줄이 '처음 실행되는' 순서로 옳은 것은?\n" + labeled)
+    return {
+        "ct_skill":     "알고리즘적사고",
+        "question":     stem,
+        "options":      options,
+        "answer":       answer_label,
+        "answer_type":  "conceptual",       # _verify_one(스니펫 실행)이 건드리지 않게
+        "type":         "execution_order",  # quiz_spec §5 추가 필드
+        "track":        "code",
+        "verify_method": "trace",
+        "verified":     True,
+        "explanation":  "함수는 정의된 줄이 아니라 '호출될 때' 안쪽 줄이 실행돼요. "
+                        "줄 번호 순서가 아니라 실제 호출 흐름을 따라간 순서가 정답이에요.",
+        "focus_points": ["함수 정의보다 그 함수를 '부르는 줄'이 먼저 실행돼요",
+                         "위에서 아래가 아니라 실제 호출 흐름을 따라가 보기"],
+        "_exec_lines":  by_source,           # 라벨 순서(소스순) — 검증 재현용
+    }
+
+
+def _validate_execution_order(code: str, q: dict) -> bool:
+    """검증 게이트: 트레이스 재현(결정성) + 보기 4개 상이 + 정답이 실행 순서와 일치."""
+    if not q or q.get("type") != "execution_order":
+        return False
+    opts = q.get("options", [])
+    if len(opts) != 4 or len({o.split(". ", 1)[-1] for o in opts}) != 4:
+        return False                 # 보기 4개가 모두 서로 달라야(정답 유일)
+    by_source = q.get("_exec_lines")
+    if not by_source:
+        return False
+    code = _clean_code(code)         # build와 동일하게 정제(줄 번호 일관)
+    trace = _run_tracer(code)        # 트레이스 재현(결정성)
+    if not trace:
+        return False
+    label = {ln: i for i, ln in enumerate(by_source)}
+    chosen = set(by_source)
+    seen, exec_order = set(), []     # 선택된 줄들의 첫 실행 순서 재계산
+    for ln in trace:
+        if ln in chosen and ln not in seen:
+            seen.add(ln)
+            exec_order.append(label[ln])
+    if len(exec_order) != len(by_source):
+        return False
+    expected = " → ".join(_CIRCLED[i] for i in exec_order)
+    ans_opt = next((o for o in opts if o.startswith(q.get("answer", "") + ".")), "")
+    return ans_opt.split(". ", 1)[-1] == expected
+
+
+def _apply_execution_order(questions: list, code: str) -> list:
+    """알고리즘적사고 슬롯을 '실행 순서 고르기'로 교체. 실패 시 기존 코드 문항 유지."""
+    out = []
+    for q in questions:
+        if q.get("ct_skill") == "알고리즘적사고":
+            eq = _build_execution_order(code)
+            if eq and _validate_execution_order(code, eq):
+                out.append(eq)
+                continue
+            print("[execution_order] 생성/검증 실패 → 기존 코드 문항 유지")
+        out.append(q)
+    return out
+
+
 def _student_safe_questions(questions: list) -> list:
     """학생 응답용 문항 필드만 추린다. 내부 전용 필드(focus_points 등)는 제외."""
     return [
@@ -556,6 +766,8 @@ def _student_safe_questions(questions: list) -> list:
             "options":     q.get("options"),
             "answer":      q.get("answer"),
             "explanation": q.get("explanation", ""),
+            # quiz_spec §5: 유형 메타. 코드 자체 문항은 None(기존 호환), 신규 유형만 값을 가진다.
+            "type":        q.get("type"),
         }
         for q in questions
     ]
@@ -684,8 +896,12 @@ def generate_problem():
     if parsed is None:
         return jsonify({"error": str(last_error)}), 503
 
-    # CT 유형 구성 보정(중복/누락 보충) → 문항별 검증 + 실패시 단일 문항 재생성/스킵
+    # CT 유형 구성 보정(중복/누락 보충)
     reconciled = _reconcile_skills(parsed["questions"], code, templates)
+    # 알고리즘적사고 슬롯을 '실행 순서 고르기'(트레이스 검증)로 교체(실패 시 코드형 유지).
+    # process_questions보다 먼저 — 교체된 conceptual 문항이 스킵되지 않고 통과하도록.
+    reconciled = _apply_execution_order(reconciled, code)
+    # 문항별 검증 + 실패시 단일 문항 재생성/스킵 (실행순서 문항은 conceptual이라 그대로 통과)
     final_questions = _process_questions(reconciled, code, templates)
     _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
     return jsonify({
@@ -739,8 +955,12 @@ def session_start():
     if parsed is None:
         return jsonify({"error": f"문제 생성 실패: {last_error}"}), 503
 
-    # CT 유형 구성 보정(중복/누락 보충) → 문항별 검증 + 실패시 단일 문항 재생성/스킵
+    # CT 유형 구성 보정(중복/누락 보충)
     reconciled = _reconcile_skills(parsed["questions"], code, templates)
+    # 알고리즘적사고 슬롯을 '실행 순서 고르기'(트레이스 검증)로 교체(실패 시 코드형 유지).
+    # process_questions보다 먼저 — 교체된 conceptual 문항이 스킵되지 않고 통과하도록.
+    reconciled = _apply_execution_order(reconciled, code)
+    # 문항별 검증 + 실패시 단일 문항 재생성/스킵 (실행순서 문항은 conceptual이라 그대로 통과)
     final_questions = _process_questions(reconciled, code, templates)
     session_id = _gen_session_id()
     _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
