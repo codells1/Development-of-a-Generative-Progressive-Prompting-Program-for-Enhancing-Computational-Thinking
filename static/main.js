@@ -115,7 +115,7 @@ function selectOption(label) {
     document.querySelectorAll(".option-btn").forEach(btn => {
         btn.classList.toggle("selected", btn.dataset.value === label);
     });
-    document.getElementById("submit-btn").disabled = false;
+    setSubmitVisible(true);   // 보기를 골랐으니 제출 버튼 노출·활성
 }
 
 function showCurrentProblem() {
@@ -147,8 +147,13 @@ function showCurrentProblem() {
         `<div class="problem-item">${escapeHtml(data.question || "")}</div>`;
 
     renderOptions(data.options);
-    document.getElementById("submit-btn").disabled = true;
+    setSubmitVisible(false);   // 아직 안 골랐으니 제출 버튼 숨김
     document.getElementById("feedback-area").classList.add("hidden");
+    // 새 문제는 아직 안 풀었으므로 '다음 문제' 버튼을 확실히 숨기고 상태를 초기화한다.
+    // (정답을 맞혀야만 submitAnswer에서 hidden을 풀어 노출 → 오답·미응답 시엔 절대 안 보임)
+    const nextBtn = document.getElementById("next-problem-btn");
+    nextBtn.classList.add("hidden");
+    nextBtn.disabled = false;
     document.getElementById("answer-submit-row").classList.remove("hidden");
     answerArea.classList.add("visible");
     showHintButton();
@@ -180,10 +185,10 @@ function submitAnswer() {
         document.getElementById("answer-submit-row").classList.remove("hidden");
         feedbackArea.classList.remove("hidden");
 
-        // 선택 초기화 → 새 보기를 고르기 전까지 제출 비활성화
+        // 선택 초기화 → 새 보기를 고르기 전까지 제출 버튼을 숨긴다(헷갈려 누르는 것 방지)
         selectedOption = null;
         document.querySelectorAll(".option-btn").forEach(b => b.classList.remove("selected"));
-        document.getElementById("submit-btn").disabled = true;
+        setSubmitVisible(false);
         return;
     }
 
@@ -263,51 +268,70 @@ function showEvalResult(data, errorMsg = null) {
     const overlay = document.getElementById("eval-overlay");
     document.getElementById("eval-topic").textContent = currentTopic;
 
+    // 결과 화면은 '평가 근거' 중심. (총평·루브릭 지표 점수는 화면에서 제거)
     if (errorMsg || !data) {
-        document.getElementById("ct-feedback").textContent = errorMsg || "평가 중 오류가 발생했습니다.";
-        renderRubric(null);
+        renderEvidence(null, errorMsg || "평가 중 오류가 발생했습니다.");
     } else {
-        document.getElementById("ct-feedback").textContent = data.narrative_feedback || "";
-        renderRubric(data);
+        renderEvidence(data.highlights);
     }
 
     document.querySelector(".eval-next-btn").textContent = "새 코드 →";
     overlay.classList.remove("hidden");
 }
 
-// 7요소 상/중/하/NA 배지를 오른쪽 패널에 순서대로 표시. 백엔드 elements 배열 사용(순서 고정).
-function renderRubric(data) {
-    const box = document.getElementById("ct-rubric");
+// 평가 근거: 학생의 실제 발화 → 어느 요소에서 어떤 등급으로, 왜 그렇게 평가됐는지.
+// "내 대화의 어떤 부분이 어떻게 평가됐는지"를 학생이 직접 확인하게 한다.
+function renderEvidence(highlights, emptyMsg = null) {
+    const box = document.getElementById("ct-evidence");
     box.innerHTML = "";
-    if (!data) {
-        box.innerHTML = `<p class="rubric-empty">평가 결과를 불러오지 못했습니다.</p>`;
+    if (!Array.isArray(highlights) || highlights.length === 0) {
+        const msg = emptyMsg ||
+            "이번 세션에서는 평가 근거로 삼을 만한 대화가 충분하지 않았어요. " +
+            "다음엔 챗봇과 더 이야기하며 질문해 보면, 어떤 말이 어떻게 평가됐는지 여기서 확인할 수 있어요.";
+        const p = document.createElement("p");
+        p.className = "evidence-empty";
+        p.textContent = msg;
+        box.appendChild(p);
         return;
     }
-    const els = data.elements || [];
-    if (!els.length) {
-        box.innerHTML = `<p class="rubric-empty">표시할 지표가 없습니다.</p>`;
-        return;
-    }
-    els.forEach((e) => box.appendChild(rubricRow(e.name, e.grade)));
+    highlights.forEach((h) => box.appendChild(evidenceItem(h)));
 }
 
-function rubricRow(label, grade) {
-    const isNA = !(grade === "상" || grade === "중" || grade === "하");
-    const row = document.createElement("div");
-    row.className = "rubric-row" + (isNA ? " na-row" : "");
-
-    const name = document.createElement("span");
-    name.className = "rubric-name";
-    name.textContent = label;
-
+function evidenceItem(h) {
+    const grade = h.grade;
     const cls = { "상": "g-sang", "중": "g-jung", "하": "g-ha" }[grade] || "g-na";
+
+    const item = document.createElement("div");
+    item.className = "evidence-item";
+
+    // 상단: 요소 배지 + 등급 칩
+    const head = document.createElement("div");
+    head.className = "evidence-head";
+    const tag = document.createElement("span");
+    tag.className = "evidence-element";
+    tag.textContent = h.element || "";
     const chip = document.createElement("span");
     chip.className = "rubric-chip " + cls;
-    chip.textContent = isNA ? "—" : grade;   // NA는 오류처럼 보이지 않게 흐린 '—'
+    chip.textContent = grade || "—";
+    head.appendChild(tag);
+    head.appendChild(chip);
 
-    row.appendChild(name);
-    row.appendChild(chip);
-    return row;
+    // 학생 발화 인용
+    const quote = document.createElement("blockquote");
+    quote.className = "evidence-quote";
+    quote.textContent = h.quote || "";
+
+    item.appendChild(head);
+    item.appendChild(quote);
+
+    // 왜 그렇게 평가됐는지 (있을 때만)
+    if (h.reason) {
+        const reason = document.createElement("p");
+        reason.className = "evidence-reason";
+        reason.textContent = h.reason;
+        item.appendChild(reason);
+    }
+    return item;
 }
 
 function closeEvalAndRestart() {
@@ -526,12 +550,20 @@ function setAnswerInputEnabled(enabled) {
             btn.disabled = !enabled;
         }
     });
-    document.getElementById("submit-btn").disabled = !enabled || !selectedOption;
+    setSubmitVisible(enabled && !!selectedOption);   // 고른 보기가 있을 때만 제출 노출
 }
 
 function setNextProblemEnabled(enabled) {
     const btn = document.getElementById("next-problem-btn");
     if (btn) btn.disabled = !enabled;
+}
+
+// 제출 버튼은 '고른 보기가 있을 때'만 보이고 동작한다.
+// 새 문제·오답 직후엔 선택이 비므로 숨겨지고, 보기를 (다시) 고르면 다시 나타난다.
+function setSubmitVisible(visible) {
+    const btn = document.getElementById("submit-btn");
+    btn.classList.toggle("hidden", !visible);
+    btn.disabled = !visible;
 }
 
 // 모델이 답변 전체를 따옴표로 감싼 경우 양끝 따옴표를 제거하고 공백을 정리한다.

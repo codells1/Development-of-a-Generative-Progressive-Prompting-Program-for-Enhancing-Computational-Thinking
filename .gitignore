@@ -26,3 +26,6 @@ feedback.json
 
 # 생성된 문항 세트 보관 (로컬 생성, focus_points 등 내부 필드 포함)
 problem_sets.json
+
+# 로컬 실행 로그
+_app.log

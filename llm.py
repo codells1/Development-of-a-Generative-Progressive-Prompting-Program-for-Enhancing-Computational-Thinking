@@ -20,14 +20,36 @@ def _load_prompt(filename: str) -> str:
         print(f"프롬프트 파일 로드 실패({filename}): {e}")
         return ""
 
-BASE_URL = "http://localhost:1234/v1"
-MODEL    = "local-model"
+# LM Studio 엔드포인트·모델. 환경변수로 덮어쓰면 코드 수정 없이 모델 교체 가능.
+#   LMSTUDIO_BASE_URL / LMSTUDIO_MODEL
+# 모델 ID는 LM Studio 모델 페이지 경로 형식(publisher/model-key)을 그대로 쓴다.
+# (Q6_K 등 양자화는 LM Studio에서 로드할 때 고르는 것이라 API 모델 ID에는 안 들어간다.)
+BASE_URL = os.environ.get("LMSTUDIO_BASE_URL", "http://localhost:1234/v1")
+MODEL    = os.environ.get("LMSTUDIO_MODEL", "qwen/qwen3.5-9b")
 
 TEMP_CREATIVE = 0.6   # 챗봇, 코드/문제 생성 (객관식 형식 안정 위해 0.7→0.6)
 TEMP_PRECISE  = 0.2   # CT 분석
 
 _client   = OpenAI(base_url=BASE_URL, api_key="lm-studio")
 _llm_lock = threading.Lock()
+
+
+# ── 언어 가드 (중국어·기타 외국어 혼입 방지) ────────────────────────
+# 모든 호출의 시스템 메시지 끝에 자동으로 덧붙여, 어떤 단계든 한국어로만 출력하게 한다.
+_LANG_GUARD = (
+    "\n\n[언어 규칙] 설명·해설·질문·피드백 등 자연어 문장은 한국어로만 쓰고, "
+    "중국어(한자)·일본어 등 다른 언어를 섞지 않는다. "
+    "단, 파이썬 코드 자체(변수·함수 이름, 키워드 등 식별자)는 영문(ASCII) snake_case로 둔다 — "
+    "식별자를 한글로 짓지 마라(주석·문자열 메시지는 한국어 가능)."
+)
+
+
+def _with_lang_guard(messages: list) -> list:
+    """시스템 메시지 끝에 언어 가드를 붙인 새 메시지 리스트를 돌려준다."""
+    if messages and messages[0].get("role") == "system":
+        head = {**messages[0], "content": messages[0]["content"] + _LANG_GUARD}
+        return [head, *messages[1:]]
+    return [{"role": "system", "content": _LANG_GUARD.strip()}, *messages]
 
 
 # ── System Prompts ──────────────────────────────────────────────────
@@ -57,8 +79,10 @@ SYSTEM_CODE = (
     "클래스·재귀·예외처리·컴프리헨션·람다·외부 라이브러리 등 고급 문법은 쓰지 않는다).\n"
     "규칙:\n"
     "1. 외부 입력 없이 그대로 실행되는 단일 완결 프로그램 1개. 데이터는 코드 안에 고정, input() 금지.\n"
-    "2. 길이 최대 20줄(권장 12~18줄), 함수 1~2개. 20줄을 절대 넘기지 마라. "
-    "분해·통합 문항을 위해 함수 2개를 권장한다. 변수·함수 이름은 의미가 드러나게.\n"
+    "2. 길이 최대 20줄(권장 12~18줄), 함수 1~2개. 20줄을 절대 넘기지 마라(빈 줄 포함). "
+    "분해·통합 문항을 위해 함수 2개를 권장한다. "
+    "★ 변수·함수 이름은 의미가 드러나는 영문 snake_case로 짓는다(예: total_price, grade_quiz). "
+    "한글 이름(예: 계산_점수)·한글 변수는 쓰지 마라. 식별자는 영문, 주석·문자열 메시지는 한국어로 한다.\n"
     "3. 권장 형태: 값을 계산하는 함수 1개(반복+조건 포함) + 그 결과를 쓰는 함수 1개(출력/판정).\n"
     "4. 코드에는 (a)함수 또는 처리 단계 2개 이상, (b)반복문, (c)함수로 세부를 감춘 부분, "
     "(d)조건 분기, (e)부분이 합쳐져 하나의 목적을 이루는 구조가 모두 있어야 한다.\n"
@@ -87,12 +111,14 @@ SYSTEM_PROBLEM = (
     "5. 각 문항 보기는 정확히 4개(A/B/C/D), 정답은 그 중 1개. 오답 보기도 그럴듯하게.\n"
     "6. 정답 라벨이 한 자리에 쏠리지 않게 5문항에 걸쳐 다양하게 분포시킨다.\n"
     "7. 각 문항에 answer_type을 분류해 넣는다:\n"
-    "   - 'computational': 코드를 실행하면 값이 하나로 정해지는 문항(출력값, n번 반복 후 변수값, 함수 반환값 등).\n"
-    "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻는 문항.\n"
+    "   - 'computational': 코드를 실행하면 값이 하나로 정해지는 문항(출력값, n번 반복 후 변수값, 함수 반환값 등). 정답 보기는 그 값 자체.\n"
+    "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻는 문항. 정답 보기가 설명 문장이면 conceptual로 둔다(서술형 답을 computational로 분류하지 마라).\n"
     "   강제는 아니지만 보통 알고리즘적사고(가끔 패턴인식)가 computational, 분해·추상화·통합은 conceptual이 자연스럽다.\n"
     "8. 각 문항의 verification_snippet:\n"
     "   - answer_type이 'computational'이면: 정답 값을 구하는 자족(self-contained) 파이썬 코드를 적는다. "
-    "필요한 함수 정의를 모두 그 안에 포함하고, 정답 값 하나만 print 한다. "
+    "필요한 함수 정의를 모두 그 안에 포함한다. ★ 마지막 줄은 반드시 print()로 정답 값 하나만 출력한다 "
+    "(함수를 호출만 하고 print를 빠뜨리면 안 됨: 'calc(...)' ✕ → 'print(calc(...))' ○). "
+    "그리고 그 print 출력값이 정답으로 표시한 보기(answer)의 값과 정확히 같아야 한다. "
     "input()·파일·네트워크·무한루프 금지.\n"
     "   - answer_type이 'conceptual'이면: 빈 문자열 \"\".\n"
     "   - computational 문항의 보기 값(라벨 뒤 부분)에는 단위·접미사(번, 개, 원, 명, 회 등)나 "
@@ -121,8 +147,7 @@ PROBLEM_SET_SCHEMA = {
     "properties": {
         "title":      {"type": "string"},
         "summary":    {"type": "string"},
-        "difficulty": {"type": "string"},
-        "code":       {"type": "string"},
+        # difficulty·code는 echo만 시키고 파싱에 안 써서 토큰 낭비·JSON 잘림(truncation)의 원인이라 스키마에서 뺀다.
         "questions": {
             "type": "array",
             "minItems": 5,
@@ -153,7 +178,7 @@ PROBLEM_SET_SCHEMA = {
             },
         },
     },
-    "required": ["title", "summary", "difficulty", "code", "questions"],
+    "required": ["title", "summary", "questions"],
 }
 
 PROBLEM_SET_RESPONSE_FORMAT = {
@@ -191,106 +216,73 @@ SYSTEM_CT_ANALYSIS = (
     "마크다운 코드펜스·설명 문장을 덧붙이지 마라."
 )
 
-# ── Reasoning Fallback (Qwen3 thinking mode) ───────────────────────
-
-_KO_ENDING = re.compile(
-    r"[가-힣]+(?:세요|요\?|까요\?|인가요\?|볼까요\?|보세요\.?|해요\.?|십시오\.?)\s*$"
-)
-
-
-def _is_mostly_korean(text: str) -> bool:
-    ko = len(re.findall(r"[가-힣]", text))
-    en = len(re.findall(r"[a-zA-Z]", text))
-    return ko > 0 and ko >= en
+# ── 사고(thinking) 건너뛰기 — qwen3.5-9b 대응 ──────────────────────
+# 이 모델은 LM Studio 템플릿이 어시스턴트 턴에 <think>를 자동으로 열어주는 탓에,
+# 그냥 호출하면 사고과정(평문)을 한참 쏟다가 </think> 뒤에야 답을 낸다(느리고 누출).
+# /no_think·enable_thinking=False 등 토글은 이 모델에 안 먹힌다.
+# 해결: 어시스턴트 메시지를 </think>로 '프리필'해 사고 블록을 즉시 닫고 곧장 답하게 한다.
+# (실측: 27~52초 → 0.5~5초, 사고 누출 없음. 스트리밍·JSON 스키마·코드생성 모두 정상.)
+_SKIP_THINK_PREFILL = {"role": "assistant", "content": "</think>\n\n"}
 
 
-def _extract_from_reasoning(reasoning: str) -> str:
-    candidates = []
-    for line in reasoning.splitlines():
-        line = line.strip().lstrip("*- ").strip()
-        m = re.search(
-            r"(?:Better Draft|Final Draft[^:]*|Revised[^:]*|Refinement|Draft)\s*:?\*?\s*(.+)",
-            line, re.IGNORECASE,
-        )
-        text = m.group(1).strip().lstrip("*").strip() if m else line
-        if len(text) < 10:
-            continue
-        if _is_mostly_korean(text):
-            candidates.append(text)
-    for text in reversed(candidates):
-        if _KO_ENDING.search(text) or "?" in text:
-            return text
-    return candidates[-1] if candidates else ""
+def _skip_think(messages: list) -> list:
+    """메시지 끝에 </think> 프리필을 붙여 모델이 사고를 건너뛰고 바로 답하게 한다."""
+    return [*messages, dict(_SKIP_THINK_PREFILL)]
 
 
-# ── Think 토큰 제거 (Qwen3 추론 모드가 <think>...</think>를 본문에 섞어 출력) ──
-
-_THINK_OPEN  = "<think>"
+# ── 방어용 </think> 스트리퍼 ────────────────────────────────────────
+# 프리필로 보통은 사고가 없지만, 혹시 모델이 사고 블록을 흘리면 안전망으로 잘라낸다.
+# 이 모델의 사고는 여는 <think>가 프롬프트에 있어 본문엔 '…</think> 답변' 형태로만
+# 새므로, </think>가 보이면 그 뒤(진짜 답변)만 남긴다. <think>…</think> 쌍도 함께 제거.
 _THINK_CLOSE = "</think>"
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+# 사고 블록이 새고 있다는 신호(이 단어들이 보이면 </think>가 올 때까지 방출을 보류).
+_THINK_MARKERS = ("<think>", "thinking process", "**analyze")
 
 
 def strip_think(text: str) -> str:
-    """완성된 문자열에서 <think>...</think> 블록을 통째로 제거한다."""
-    # 닫는 태그 없이 think로만 끝나는 비정상 출력도 잘라낸다.
+    """완성된 문자열에서 사고 블록을 제거한다. </think>가 있으면 그 뒤만 남긴다."""
     text = _THINK_RE.sub("", text)
-    open_idx = text.lower().find(_THINK_OPEN)
-    if open_idx != -1 and _THINK_CLOSE not in text.lower()[open_idx:]:
-        text = text[:open_idx]
-    return text
+    low = text.lower()
+    idx = low.rfind(_THINK_CLOSE)
+    if idx != -1:
+        text = text[idx + len(_THINK_CLOSE):]
+    return text.lstrip("\n")
 
 
 class ThinkStreamFilter:
-    """스트리밍 델타에서 <think>...</think> 구간을 실시간 제거한다.
-
-    태그가 청크 경계에 걸쳐 쪼개져도 안전하도록, 부분 태그가 될 수 있는
-    꼬리만 버퍼에 남기고 그 외 텍스트만 방출한다.
-    """
+    """스트리밍 방어 필터. 프리필 덕에 보통은 그대로 통과시키지만,
+    혹시 사고 블록이 새면 </think>가 나올 때까지 방출을 보류하고
+    </think> 뒤(진짜 답변)부터 내보낸다."""
 
     def __init__(self):
         self._buf = ""
-        self._in_think = False
-
-    def _safe_tail(self, tag: str) -> int:
-        """버퍼 접미사가 tag 접두사와 일치하는 최대 길이(부분 태그 후보)를 반환."""
-        for k in range(min(len(tag) - 1, len(self._buf)), 0, -1):
-            if self._buf.endswith(tag[:k]):
-                return k
-        return 0
+        self._passthrough = False   # 사고 판정이 끝나 통과 모드로 전환됐는지
 
     def feed(self, text: str) -> str:
-        """델타를 받아 화면에 내보낼(생각 구간이 제거된) 텍스트를 반환."""
+        if self._passthrough:
+            return text
         self._buf += text
-        out = []
-        while self._buf:
-            if not self._in_think:
-                idx = self._buf.find(_THINK_OPEN)
-                if idx != -1:
-                    out.append(self._buf[:idx])
-                    self._buf = self._buf[idx + len(_THINK_OPEN):]
-                    self._in_think = True
-                    continue
-                keep = self._safe_tail(_THINK_OPEN)
-                out.append(self._buf[:len(self._buf) - keep] if keep else self._buf)
-                self._buf = self._buf[len(self._buf) - keep:] if keep else ""
-                break
-            else:
-                idx = self._buf.find(_THINK_CLOSE)
-                if idx != -1:
-                    self._buf = self._buf[idx + len(_THINK_CLOSE):]
-                    self._in_think = False
-                    continue
-                keep = self._safe_tail(_THINK_CLOSE)
-                self._buf = self._buf[len(self._buf) - keep:] if keep else ""
-                break
-        return "".join(out)
+        low = self._buf.lower()
+        idx = low.find(_THINK_CLOSE)
+        if idx != -1:
+            # 사고 블록 끝 — 그 뒤만 방출하고 이후는 통과.
+            rest = self._buf[idx + len(_THINK_CLOSE):]
+            self._buf = ""
+            self._passthrough = True
+            return rest.lstrip("\n")
+        # 아직 </think> 없음. 사고 마커가 안 보이고 버퍼가 충분히 쌓였으면 통과로 확정.
+        if not any(m in low for m in _THINK_MARKERS) and len(self._buf) >= 24:
+            out, self._buf = self._buf, ""
+            self._passthrough = True
+            return out
+        return ""   # 사고처럼 보이면 방출 보류(계속 버퍼링)
 
     def flush(self) -> str:
-        """스트림 종료 시 남은 버퍼 처리. think 안이면 버리고, 밖이면 방출."""
-        if self._in_think:
-            self._buf = ""
-            return ""
+        """스트림 종료 시 남은 버퍼 처리."""
         out, self._buf = self._buf, ""
+        if not self._passthrough and any(m in out.lower() for m in _THINK_MARKERS):
+            return ""   # </think> 없이 끝난 사고 블록은 버린다
         return out
 
 
@@ -301,7 +293,7 @@ def _generate(messages: list, temperature: float, max_tokens: int = 4096,
     """모든 비스트리밍 LLM 호출의 단일 진입점. Lock으로 동시 호출을 직렬화한다."""
     kwargs = dict(
         model=MODEL,
-        messages=messages,
+        messages=_skip_think(_with_lang_guard(messages)),
         temperature=temperature,
         max_tokens=max_tokens,
         stream=False,
@@ -310,12 +302,7 @@ def _generate(messages: list, temperature: float, max_tokens: int = 4096,
         kwargs["response_format"] = response_format
     with _llm_lock:
         resp = _client.chat.completions.create(**kwargs)
-    choice = resp.choices[0]
-    content = strip_think(choice.message.content or "").strip()
-    if not content:
-        reasoning = getattr(choice.message, "reasoning_content", None) or ""
-        content = _extract_from_reasoning(reasoning)
-    return content
+    return strip_think(resp.choices[0].message.content or "").strip()
 
 
 # ── 생성 계열 (TEMP_CREATIVE, history 없음) ────────────────────────
@@ -325,8 +312,8 @@ def call_code_gen(topic: str = "", ctx: str = "", difficulty: str = "") -> str:
     system = SYSTEM_CODE
     if ctx:
         system += f"\n\n[참고 예시]\n{ctx}"
-    # 코드 생성은 추론 없이도 충분하고 가장 느린 단계라 think를 끈다 (Qwen3 /no_think).
-    user_content = f"/no_think 난이도: {difficulty} / 주제 힌트: {topic}"
+    # 사고는 _generate의 </think> 프리필로 일괄 차단된다(여기서 토큰 지시 불필요).
+    user_content = f"난이도: {difficulty} / 주제 힌트: {topic}"
     return _generate(
         [{"role": "system", "content": system},
          {"role": "user",   "content": user_content}],
@@ -344,7 +331,7 @@ def call_problem_gen(code: str, templates: str = "", difficulty: str = "") -> st
         [{"role": "system", "content": system},
          {"role": "user",   "content": user_content}],
         TEMP_CREATIVE,
-        max_tokens=4096,
+        max_tokens=6144,   # 5문항+스니펫 JSON이 잘리지 않도록 여유 (truncation 방지)
         response_format=PROBLEM_SET_RESPONSE_FORMAT,
     )
 
@@ -355,8 +342,8 @@ SYSTEM_SINGLE_PROBLEM = (
     "규칙:\n"
     "1. 보기 정확히 4개(A/B/C/D), 정답 1개. 오답도 그럴듯하게.\n"
     "2. answer_type 분류:\n"
-    "   - 'computational': 코드를 실행하면 값이 하나로 정해지는 문항. verification_snippet은 필요한 함수 정의를 모두 그 안에 포함한 자족(self-contained) 실행 코드로, 정답 값 하나만 print 한다. 위 코드의 함수를 쓰려면 그 정의를 스니펫 안에 다시 적어라. input()·파일·네트워크 금지.\n"
-    "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻는 문항. verification_snippet은 \"\".\n"
+    "   - 'computational': 정답 보기가 코드 실행으로 정해지는 값(숫자·문자열) 자체인 문항. verification_snippet은 필요한 함수 정의를 모두 그 안에 포함한 자족(self-contained) 실행 코드로, ★ 마지막 줄에서 반드시 print()로 정답 값 하나만 출력한다(함수 호출만 하고 print 빠뜨리지 마라: 'calc(...)' ✕ → 'print(calc(...))' ○). 그 출력값은 정답 보기(answer) 값과 정확히 같아야 한다. 위 코드의 함수를 쓰려면 그 정의를 스니펫 안에 다시 적어라. input()·파일·네트워크 금지.\n"
+    "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻거나 정답 보기가 설명 문장인 문항. verification_snippet은 \"\". (서술형 답을 computational로 분류하지 마라.)\n"
     "3. computational이면 보기 값(라벨 뒤)에 단위·접미사(번/개/원/명/회 등)나 따옴표를 붙이지 말고, verification_snippet의 print 출력과 글자 그대로 정확히 일치시킨다 (예: 5를 출력하면 'A. 5', 'A. 5회' 금지).\n"
     "4. focus_points: 1~3개의 한국어 문자열 배열. 정답을 그대로 적지 말고 학생이 풀이를 떠올리는 '생각의 단서'로 적는다.\n\n"
     'JSON 형식:\n'
@@ -375,7 +362,7 @@ def call_single_problem_gen(code: str, ct_skill: str, templates: str = "") -> st
         [{"role": "system", "content": system},
          {"role": "user",   "content": user_content}],
         TEMP_CREATIVE,
-        max_tokens=1024,
+        max_tokens=2048,   # 단일 문항+스니펫이 잘리지 않도록 여유
         response_format=SINGLE_PROBLEM_RESPONSE_FORMAT,
     )
 
@@ -386,9 +373,9 @@ def call_log_analysis(log_text: str) -> str:
     """CT 측정. 대화 로그를 분석 대상 자료로만 전달 (history 미주입)."""
     return _generate(
         [{"role": "system", "content": SYSTEM_CT_ANALYSIS},
-         {"role": "user",   "content": f"/no_think [분석할 학습 기록]\n{log_text}"}],
+         {"role": "user",   "content": f"[분석할 학습 기록]\n{log_text}"}],
         TEMP_PRECISE,
-        max_tokens=800,   # 상중하 점수 + 서술형 피드백(3~5문장)까지 담을 여유
+        max_tokens=1500,   # 7요소 점수 + 평가 근거(발화 인용 3~6개) + 서술형 피드백까지 담을 여유
     )
 
 
@@ -444,7 +431,7 @@ def call_hint_followup(code: str, current_problem: str, answer: str, explanation
     if secret:
         system += ("\n\n[비공개 판단 기준 — 학생에게 절대 노출 금지]\n" + secret)
     user = (
-        "/no_think [학생과의 최근 대화]\n"
+        "[학생과의 최근 대화]\n"
         f"{transcript}\n\n"
         "위 마지막 학생 발화의 생각이 정답 방향에 맞는지 판단해 JSON으로만 답하라."
     )
@@ -530,7 +517,7 @@ def stream_chatbot(messages: list):
     """챗봇 SSE 스트리밍. Lock 미적용 — 스트리밍 중 Lock 점유로 다른 호출 차단 방지."""
     return _client.chat.completions.create(
         model=MODEL,
-        messages=messages,
+        messages=_skip_think(_with_lang_guard(messages)),
         max_tokens=4096,
         temperature=TEMP_CREATIVE,
         stream=True,

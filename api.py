@@ -11,6 +11,8 @@ import rag as rag_store
 import llm
 
 VERIFY_TIMEOUT_SEC    = 5      # verification_snippet 실행 타임아웃
+CODE_MAX_LINES        = 20     # 생성 코드 최대 줄 수(빈 줄 제외). 초과 시 재생성
+CODE_GEN_RETRY        = 3      # 코드 길이 초과 시 재생성 최대 횟수
 PROBLEM_RETRY_LIMIT   = 3      # 세트 파싱·구조 검증 실패 시 전체 재생성 최대 횟수
 VERIFY_RETRY_LIMIT    = 3      # spec §3.4 — 검증 실패한 그 문항만 재생성 최대 횟수
 CHAT_LOG_CHAR_BUDGET  = 3500   # CT 평가 시 대화 로그 글자수 상한 (모델 컨텍스트 초과 방지)
@@ -145,11 +147,49 @@ def _clamp_narrative(text: str) -> str:
     return cut.rstrip() + "…"
 
 
+_VALID_GRADES = {"상", "중", "하"}
+# LLM JSON 키(예: "실행흐름") → 화면 표시명(예: "실행 흐름"). 근거 항목의 요소 매핑용.
+_ELKEY_TO_NAME = {key: name for _id, key, name in CT_ELEMENTS}
+_HIGHLIGHT_LIMIT = 6
+
+
+def _norm_highlights(raw_list) -> list:
+    """루브릭의 '근거' 배열을 화면용으로 정리한다.
+    각 항목 = {quote(학생 발화 인용), element(요소 표시명), grade(상/중/하), reason(한 줄)}.
+    발화가 비었거나 등급이 상/중/하가 아니면 버린다. 최대 _HIGHLIGHT_LIMIT개."""
+    out = []
+    if not isinstance(raw_list, list):
+        return out
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        quote  = str(item.get("발화")  or item.get("quote")   or "").strip()
+        grade  = str(item.get("등급")  or item.get("grade")   or "").strip()
+        reason = str(item.get("이유")  or item.get("reason")  or "").strip()
+        el     = str(item.get("요소")  or item.get("element") or "").strip()
+        # 모델이 라벨을 붙여 인용한 경우 제거
+        for tag in ("[학생·채점대상]", "[학생]"):
+            if quote.startswith(tag):
+                quote = quote[len(tag):].strip()
+        if not quote or grade not in _VALID_GRADES:
+            continue
+        out.append({
+            "quote":   quote,
+            "element": _ELKEY_TO_NAME.get(el, el),   # 키면 표시명으로, 이미 표시명이면 그대로
+            "grade":   grade,
+            "reason":  reason,
+        })
+        if len(out) >= _HIGHLIGHT_LIMIT:
+            break
+    return out
+
+
 def score_ct(ct_raw: dict) -> dict:
     """
-    루브릭 원시 채점 결과(ct_raw)를 7요소 상/중/하/NA + 서술 피드백으로 정리한다.
+    루브릭 원시 채점 결과(ct_raw)를 7요소 상/중/하/NA + 서술 피드백 + 평가 근거로 정리한다.
     - 숫자 총점은 만들지 않는다(학생 화면 비노출 사양).
     - 각 요소 grade ∈ "상"|"중"|"하"|"NA". elements 순서 = 화면 표시 순서(7개 고정).
+    - highlights: 학생 발화 인용 + 요소·등급·이유 (대화의 어느 부분이 어떻게 평가됐는지).
     LLM 비의존 — 순수 함수라 단독 검증 가능.
     """
     elements = []
@@ -159,6 +199,7 @@ def score_ct(ct_raw: dict) -> dict:
     return {
         "elements":           elements,
         "narrative_feedback": _clamp_narrative(ct_raw.get("feedback") or ""),
+        "highlights":         _norm_highlights(ct_raw.get("근거") or ct_raw.get("highlights")),
     }
 
 
@@ -178,6 +219,7 @@ def save_feedback(session_id: str, topic: str, scored: dict) -> None:
             "topic":              topic,
             "grades":             grades,
             "narrative_feedback": scored.get("narrative_feedback", ""),
+            "highlights":         scored.get("highlights", []),
         })
 
         with open(FEEDBACK_FILE, "w", encoding="utf-8") as f:
@@ -321,6 +363,32 @@ def _build_verification_program(snippet: str, code: str) -> str:
     )
 
 
+_STMT_HEAD_RE = re.compile(
+    r"^(def |class |import |from |return\b|if |elif |else|for |while |try|except|finally|with |raise |@|pass\b|break\b|continue\b)"
+)
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][\w.\[\]\"'() ]*\s(?:=|\+=|-=|\*=|/=)[^=]")
+
+
+def _ensure_snippet_prints(snippet: str) -> str:
+    """스니펫에 print(가 하나도 없으면, 마지막 '최상위 표현식' 줄을 print(...)로 감싼다.
+    모델이 함수를 호출만 하고 print를 빠뜨리는 흔한 실수(stdout 빈 값 → 검증 실패)를 구제한다.
+    들여쓰기된 줄·정의/제어/대입문은 건드리지 않는다(안전 우선, 애매하면 원본 유지)."""
+    if "print(" in snippet:
+        return snippet
+    lines = snippet.rstrip("\n").split("\n")
+    idx = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].strip()), None)
+    if idx is None:
+        return snippet
+    line = lines[idx]
+    stripped = line.strip()
+    if line[:1].isspace():                 # 들여쓰기된 줄(함수 본문 등)은 대상 아님
+        return snippet
+    if _STMT_HEAD_RE.match(stripped) or _ASSIGN_RE.match(stripped):
+        return snippet                     # 정의·제어·대입문이면 출력할 표현식이 아님
+    lines[idx] = f"print({stripped})"
+    return "\n".join(lines)
+
+
 def _run_verification_snippet(snippet: str, code: str = "") -> str:
     """
     verification_snippet을 임시 .py 파일로 저장해 별도 subprocess로 실행한다.
@@ -328,7 +396,7 @@ def _run_verification_snippet(snippet: str, code: str = "") -> str:
     타임아웃 VERIFY_TIMEOUT_SEC초, stdout.strip() 반환. 실패/타임아웃은 raise.
     (subprocess.run이 타임아웃 시 자식을 종료한 뒤 TimeoutExpired를 올린다.)
     """
-    program = _build_verification_program(snippet, code)
+    program = _build_verification_program(_ensure_snippet_prints(snippet), code)
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, encoding="utf-8"
     )
@@ -356,7 +424,10 @@ def _run_verification_snippet(snippet: str, code: str = "") -> str:
 def _verify_one(q: dict, code: str = "") -> tuple:
     """
     단일 computational 문항 실행 검증. (ok: bool, detail: str) 반환.
-    conceptual·빈 스니펫은 ok=True. ★ 정답을 실행값으로 덮어쓰지 않는다.
+    conceptual·빈 스니펫은 ok=True.
+    스니펫(=정답값의 근거)을 신뢰한다: 출력값이 정답 라벨 보기와 다르더라도
+    정확히 한 보기와 일치하면 그 라벨로 정답을 교정해 살린다(모델의 라벨 실수 구제).
+    어느 보기와도 안 맞을 때만 실패 → 재생성/스킵.
     code: 원본 프로그램. 스니펫이 그 함수·전역을 참조할 수 있도록 주입한다.
     """
     if q.get("answer_type") != "computational":
@@ -364,8 +435,9 @@ def _verify_one(q: dict, code: str = "") -> tuple:
     snippet = (q.get("verification_snippet") or "").strip()
     if not snippet:
         return (True, "skip (empty)")
+    options = q.get("options", [])
     ans_label = q.get("answer", "")
-    ans_option = next((o for o in q.get("options", []) if o.strip().startswith(ans_label)), "")
+    ans_option = next((o for o in options if o.strip().startswith(ans_label)), "")
     expected = _option_value(ans_option, ans_label)
     try:
         actual = _run_verification_snippet(snippet, code)
@@ -373,9 +445,18 @@ def _verify_one(q: dict, code: str = "") -> tuple:
         return (False, f"타임아웃 ({VERIFY_TIMEOUT_SEC}s)")
     except Exception as e:
         return (False, f"실행 오류 — {e}")
-    if not _values_match(actual, expected):
-        return (False, f"불일치 stdout={actual!r}, 정답 보기={expected!r}")
-    return (True, f"일치 {actual!r}")
+    if _values_match(actual, expected):
+        return (True, f"일치 {actual!r}")
+
+    # 라벨이 틀렸을 수 있다 — 스니펫 출력과 일치하는 보기가 정확히 하나면 정답 라벨을 교정.
+    matches = [o.strip()[0] for o in options
+               if o.strip()[:1] in ("A", "B", "C", "D")
+               and _values_match(actual, _option_value(o, o.strip()[0]))]
+    if len(matches) == 1:
+        old = q.get("answer")
+        q["answer"] = matches[0]
+        return (True, f"정답 라벨 교정 {old}→{matches[0]} (스니펫 출력 {actual!r})")
+    return (False, f"불일치 stdout={actual!r}, 정답 보기={expected!r}")
 
 
 def _parse_single_problem(raw: str, expected_ct_skill: str = None) -> dict:
@@ -521,17 +602,54 @@ def _get_stored_question(session_id: str, index) -> dict | None:
     return None
 
 
+def _code_line_count(code: str) -> int:
+    """코드 길이를 줄 수로 센다(빈 줄 제외 — 실제 코드 분량 기준)."""
+    return sum(1 for ln in code.split("\n") if ln.strip())
+
+
+# 코드 본문에 섞여 나오는 마크다운 구분선(--- *** ___ ```)은 파이썬에선 무효라 제거한다.
+_MD_LINE_RE = re.compile(r"^\s*(-{3,}|\*{3,}|_{3,}|`{3,}[a-zA-Z]*)\s*$")
+_CJK_RE = re.compile(r"[一-鿿]")   # 한자(중국어) 혼입 탐지
+
+
+def _clean_code(code: str) -> str:
+    """코드 사이에 낀 마크다운 구분선 등 비파이썬 잔재를 제거한다."""
+    return "\n".join(ln for ln in code.split("\n") if not _MD_LINE_RE.match(ln)).strip()
+
+
+def _gen_code_within_limit(topic: str, ctx: str, difficulty: str) -> str:
+    """코드를 생성하되 (1) CODE_MAX_LINES 초과 또는 (2) 한자(중국어) 혼입이면 재생성한다
+    (최대 CODE_GEN_RETRY회). 9B 모델이 20줄 제한을 어기거나 문자열에 한자를 섞는 문제 대응.
+    전부 부적합하면 가장 나은 후보(한자 없음 우선 → 짧은 것)를 쓴다."""
+    best = None
+    for attempt in range(CODE_GEN_RETRY):
+        code = _clean_code(strip_fences(llm.call_code_gen(topic=topic, ctx=ctx, difficulty=difficulty)))
+        n = _code_line_count(code)
+        has_cjk = bool(_CJK_RE.search(code))
+        if n <= CODE_MAX_LINES and not has_cjk:
+            return code
+        score = n + (1000 if has_cjk else 0)   # 한자 포함은 큰 패널티로 후순위
+        if best is None or score < best[1]:
+            best = (code, score)
+        why = []
+        if n > CODE_MAX_LINES: why.append(f"{n}줄>{CODE_MAX_LINES}")
+        if has_cjk: why.append("한자혼입")
+        print(f"[generate-code] {attempt+1}/{CODE_GEN_RETRY} 재생성 — {', '.join(why)}")
+    print("[generate-code] 제한 내 실패 → 가장 나은 후보 사용")
+    return best[0]
+
+
 @api.route("/generate-code", methods=["POST"])
 def generate_code():
     data = request.get_json(silent=True) or {}
     topic = (data.get("topic_hint") or "").strip() or random.choice(CODE_TOPIC_HINTS)
     ctx = rag_store.retrieve("code_examples", topic)
     try:
-        raw = llm.call_code_gen(topic=topic, ctx=ctx, difficulty=TARGET_DIFFICULTY)
+        code = _gen_code_within_limit(topic, ctx, TARGET_DIFFICULTY)
     except Exception as e:
         return jsonify({"error": str(e)}), 503
 
-    return jsonify({"code": strip_fences(raw), "topic": topic})
+    return jsonify({"code": code, "topic": topic})
 
 
 @api.route("/generate-problem", methods=["POST"])
@@ -705,7 +823,8 @@ def chat():
     visible_parts = []
 
     def generate():
-        # <think>...</think> 추론 토큰을 학생 화면에 내보내지 않도록 스트림에서 제거
+        # 사고는 llm 쪽 </think> 프리필로 차단된다. 이 필터는 혹시 새는 사고 블록을
+        # 학생 화면에 내보내지 않기 위한 스트림 방어망이다.
         think_filter = llm.ThinkStreamFilter()
         started = [False]   # 첫 비공백 전까지의 선행 공백(주로 think 제거 후 남는 빈 줄)은 버린다
 
@@ -834,10 +953,11 @@ def evaluate():
         scored = score_ct(ct_raw)
         save_feedback(session_id, topic, scored)
 
-        # 학생 화면: 숫자 총점 없이 7요소 배지(elements) + 서술 피드백만 내려보낸다.
+        # 학생 화면: 숫자 총점 없이 7요소 배지(elements) + 서술 피드백 + 평가 근거(highlights).
         return jsonify({
             "elements":           scored["elements"],
             "narrative_feedback": scored["narrative_feedback"],
+            "highlights":         scored["highlights"],
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 503

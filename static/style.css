@@ -256,6 +256,8 @@ pre {
     padding: 36px 40px;
     max-width: 700px;
     width: 90%;
+    max-height: 90vh;        /* 근거 섹션으로 길어져도 화면을 넘지 않게 */
+    overflow-y: auto;        /* 넘치면 모달 내부 스크롤 */
     box-shadow: 0 8px 40px rgba(0,0,0,0.2);
     display: flex;
     flex-direction: column;
@@ -402,6 +404,81 @@ pre {
     color: #718096;
 }
 
+/* ── 평가 근거(내 대화의 어떤 부분이 어떻게 평가됐는지) — 결과 화면 메인 ── */
+.eval-card-evidence {
+    background: #f7f8fb;
+    border-radius: 12px;
+    padding: 24px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    text-align: left;
+}
+
+.eval-evidence-sub {
+    margin: -2px 0 6px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: #718096;
+}
+
+.ct-evidence {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+
+.evidence-item {
+    background: #ffffff;
+    border: 1px solid #e3e6ed;
+    border-left: 3px solid #4f6ef7;   /* 발화 인용 강조 */
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.evidence-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.evidence-element {
+    font-size: 12px;
+    font-weight: 700;
+    color: #3b4a66;
+    background: #edf0fb;
+    padding: 2px 9px;
+    border-radius: 12px;
+}
+
+.evidence-quote {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #2d3748;
+    font-style: normal;
+}
+
+.evidence-quote::before { content: "\201C"; color: #9aa6c2; }
+.evidence-quote::after  { content: "\201D"; color: #9aa6c2; }
+
+.evidence-reason {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #718096;
+}
+
+.evidence-empty {
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: #718096;
+}
+
 /* 왼쪽 서술 피드백 카드 — 숫자 점수 대신 따뜻한 엠블럼 */
 .eval-emblem {
     font-size: 30px;
@@ -524,6 +601,11 @@ pre {
 }
 
 #answer-submit-row.hidden {
+    display: none;
+}
+
+/* 보기를 고르기 전(새 문제·오답 직후)에는 제출 버튼을 숨겨, 학생이 헷갈려 누르는 것을 막는다 */
+#submit-btn.hidden {
     display: none;
 }
 
