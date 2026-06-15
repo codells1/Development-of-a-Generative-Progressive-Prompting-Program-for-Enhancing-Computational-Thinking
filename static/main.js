@@ -4,8 +4,10 @@ let sessionId = newSessionId();   // 새 코드(=새 세션)마다 갱신 — �
 function newSessionId() {
     return `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
-let currentCode = null;
-let allProblems = [];            // 코드 생성 직후 한 번에 받아 캐시된 5문항
+let currentCode = null;          // chat 컨텍스트용 — python_code를 가리킨다
+let pythonCode = null;           // 코드 제시 자산(유형 3·4·5가 코드 섹션에 표시)
+let pseudocodeLines = [];        // 코드 제시 자산(유형 1 블록 묶기의 입력)
+let allProblems = [];            // 코드 생성 직후 한 번에 받아 캐시된 문항 세트
 let currentProblemData = null;   // 현재 표시 중인 MCQ 객체
 let currentProblemIndex = 0;
 let submittedAnswers = [];       // 학생 선택 라벨 배열 (A/B/C/D)
@@ -67,8 +69,10 @@ async function generateCode() {
             return;
         }
 
-        codeBlock.innerHTML = `<code>${escapeHtml(data.code)}</code>`;
-        currentCode = data.code;
+        // 코드 패널은 문항 전환 시 code_kind에 따라 그린다(여기서 미리 그리지 않음).
+        pythonCode = data.python_code || data.code || "";
+        pseudocodeLines = data.pseudocode_lines || [];
+        currentCode = pythonCode;
         currentTopic = data.topic || "";
 
         setOverlay(true, `문제 ${TOTAL_PROBLEMS}개 만드는 중...`);
@@ -85,7 +89,11 @@ async function loadAllProblems() {
     const res = await fetch("/api/generate-problem", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: currentCode, session_id: sessionId }),
+        body: JSON.stringify({
+            python_code: pythonCode,
+            pseudocode_lines: pseudocodeLines,
+            session_id: sessionId,
+        }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
@@ -99,15 +107,85 @@ async function loadAllProblems() {
 function renderOptions(options) {
     const container = document.getElementById("options-list");
     container.innerHTML = "";
+    container.classList.remove("diagram-grid");
+    const isDiagram = currentProblemData && currentProblemData.type === "diagram";
     (options || []).forEach((opt, i) => {
         const label = String.fromCharCode(65 + i);
         const btn = document.createElement("button");
-        btn.className = "option-btn";
+        btn.className = "option-btn" + (isDiagram ? " option-diagram-pick" : "");
         btn.dataset.value = label;
-        btn.textContent = opt;
-        btn.onclick = () => selectOption(label);
+        if (isDiagram) {
+            // 유형 2: 인라인 순서도(긴 스크롤) 대신 압축 버튼. 클릭하면 별도 창에 크게 표시.
+            btn.dataset.def = opt;
+            btn.textContent = `${label}. 순서도 보기 ▸`;
+            btn.onclick = () => openDiagramModal(label, opt);
+        } else {
+            // 그 외: 순수 값/순서 문자열 → 화면에 A./B. 라벨을 붙여 보여준다.
+            btn.textContent = `${label}. ${opt}`;
+            btn.onclick = () => selectOption(label);
+        }
         container.appendChild(btn);
     });
+}
+
+// Mermaid 정의 문자열을 SVG로 렌더해 box에 넣는다. 실패(오프라인 등) 시 원본 텍스트로 폴백.
+async function renderMermaidInto(box, definition, id) {
+    try {
+        if (!window.mermaid) { box.textContent = definition; return; }
+        const { svg } = await mermaid.render(`${id}-${Date.now()}`, definition);
+        box.innerHTML = svg;
+    } catch (e) {
+        box.innerHTML = `<pre class="diagram-fallback">${escapeHtml(definition)}</pre>`;
+    }
+}
+
+// ── 유형 2 순서도 보기 모달 ──────────────────────────────────────────
+let modalLabel = null;   // 모달에 현재 표시 중인 보기 라벨
+
+function openDiagramModal(label, definition) {
+    modalLabel = label;
+    document.getElementById("diagram-modal-title").textContent = `보기 ${label}`;
+    const body = document.getElementById("diagram-modal-body");
+    body.innerHTML = "";
+    const box = document.createElement("div");
+    box.className = "diagram-box-modal";
+    box.textContent = "순서도 그리는 중...";
+    body.appendChild(box);
+    renderMermaidInto(box, definition, `mmd-modal-${currentProblemIndex}-${label}`);
+
+    const selBtn = document.getElementById("diagram-select-btn");
+    selBtn.textContent = (selectedOption === label) ? "✓ 선택된 보기" : "이 순서도를 정답으로 선택";
+    document.getElementById("diagram-overlay").classList.remove("hidden");
+}
+
+function selectFromModal() {
+    if (modalLabel) selectOption(modalLabel);   // 기존 채점·하이라이트 로직 그대로 사용
+    closeDiagramModal();
+}
+
+function closeDiagramModal() {
+    document.getElementById("diagram-overlay").classList.add("hidden");
+}
+
+// 코드 섹션을 현재 문항에 맞춰 그린다.
+//  - 유형 1(order): 섞인 의사코드 블록을 라벨과 함께 표시(학생이 순서를 맞춘다).
+//  - 유형 2(diagram) 등 code_kind=pseudocode: 의사코드를 텍스트로 표시.
+//  - 그 외(python): 파이썬 코드를 그대로 표시.
+function renderCodePanel(q) {
+    const codeBlock = document.getElementById("code-display");
+    if (q && q.type === "order" && Array.isArray(q.blocks)) {
+        const html = q.blocks.map(b =>
+            `<div class="pseudo-block">` +
+            `<span class="blk-label">${escapeHtml(b.label || "")}</span>` +
+            `<span class="blk-lines">${escapeHtml((b.lines || []).join("\n"))}</span>` +
+            `</div>`
+        ).join("");
+        codeBlock.innerHTML = `<div class="pseudo-blocks">${html}</div>`;
+    } else if (q && q.code_kind === "pseudocode") {
+        codeBlock.innerHTML = `<code>${escapeHtml((pseudocodeLines || []).join("\n"))}</code>`;
+    } else {
+        codeBlock.innerHTML = `<code>${escapeHtml(pythonCode || currentCode || "")}</code>`;
+    }
 }
 
 function selectOption(label) {
@@ -136,6 +214,8 @@ function showCurrentProblem() {
 
     currentProblemData = data;
     selectedOption = null;
+
+    renderCodePanel(data);   // 문항 유형(code_kind)에 맞게 코드/의사코드 패널 갱신
 
     const ctSkill = data.ct_skill || "";
     document.getElementById("problem-count").textContent =

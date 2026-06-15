@@ -1,0 +1,11 @@
+# 주제: 단어 등장 횟수 / 난이도: 중3~고1 / 개념: 반복+조건 카운트 / 반복: for(인덱스) / 조건: 있음
+def count_word(sentence, target):
+    words = sentence.split()
+    count = 0
+    for i in range(len(words)):
+        if words[i] == target:
+            count += 1
+    return count
+
+sentence = "the cat and the dog and the bird the cat"
+print(count_word(sentence, "the"))

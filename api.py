@@ -3,6 +3,7 @@ import json
 import random
 import re
 import os
+import ast
 import subprocess
 import sys
 import tempfile
@@ -51,8 +52,15 @@ _CT_ORDER     = [eid for eid, _name, _srl in CT_ELEMENTS]          # 화면 표�
 _ELID_TO_NAME = {eid: name for eid, name, _srl in CT_ELEMENTS}     # id → 표시명
 _SRL_IDS      = {eid for eid, _name, srl in CT_ELEMENTS if srl}    # SRL 요소 id
 
-# 문제 출제용 5유형 (분석용 CT 루브릭 지표와 별개). 순서 고정 — 분해→통합.
-PROBLEM_CT_SKILLS = ("분해", "패턴인식", "추상화", "알고리즘적사고", "통합")
+# 문항 슬롯 (question_generation_revision.md §2). 5문항 전부 4지선다.
+# code_kind·answer_type은 서버가 슬롯별로 주입한다(모델 신뢰 안 함).
+PROBLEM_SLOTS = (
+    {"type": "order",        "ct_skill": "문제분해",        "code_kind": "pseudocode", "answer_type": "order"},
+    {"type": "diagram",      "ct_skill": "추상화/알고리즘", "code_kind": "pseudocode", "answer_type": "diagram"},
+    {"type": "pattern",      "ct_skill": "패턴인식",        "code_kind": "python", "answer_type": "computational", "template": "ct_패턴인식.txt"},
+    {"type": "mid_output",   "ct_skill": "코드(중간 출력)", "code_kind": "python", "answer_type": "computational"},
+    {"type": "final_output", "ct_skill": "코드(최종 출력)", "code_kind": "python", "answer_type": "computational"},
+)
 
 FEEDBACK_FILE = os.path.join(os.path.dirname(__file__), "feedback.json")
 
@@ -264,59 +272,6 @@ def _options_ok(opts) -> bool:
     return True
 
 
-def _validate_question(q: dict, label: str = "문항") -> None:
-    """문항 1개의 필드·구조를 검증한다. 실패 시 ValueError.
-    세트 생성(_parse_problem_set)과 단일 재생성(_parse_single_problem)이 공유하는
-    단일 검증 경로 — 두 경로가 절대 어긋나지 않게 한다."""
-    if not isinstance(q, dict):
-        raise ValueError(f"{label}: JSON 객체가 아님")
-    if not q.get("question"):
-        raise ValueError(f"{label}: question 필드 없음")
-    opts = q.get("options", [])
-    if not (isinstance(opts, list) and len(opts) == 4):
-        n = len(opts) if isinstance(opts, list) else "N/A"
-        raise ValueError(f"{label}: options 4개 필요 (현재 {n}개)")
-    if q.get("answer") not in ("A", "B", "C", "D"):
-        raise ValueError(f"{label}: answer 라벨 오류: {q.get('answer')!r}")
-    atype = q.get("answer_type")
-    if atype not in ("computational", "conceptual"):
-        raise ValueError(f"{label}: answer_type 오류: {atype!r}")
-    vs = q.get("verification_snippet")
-    if not isinstance(vs, str):
-        raise ValueError(f"{label}: verification_snippet 필드 없음/타입 오류")
-    if atype == "computational" and not vs.strip():
-        raise ValueError(f"{label}: computational 문항은 verification_snippet 필수")
-    if atype == "conceptual" and vs.strip():
-        raise ValueError(f"{label}: conceptual 문항은 verification_snippet 빈 문자열이어야 함")
-    fp = q.get("focus_points")
-    if not isinstance(fp, list) or not (1 <= len(fp) <= 3):
-        n = len(fp) if isinstance(fp, list) else "N/A"
-        raise ValueError(f"{label}: focus_points 1~3개 배열 필요 (현재 {n})")
-    if not all(isinstance(x, str) and x.strip() for x in fp):
-        raise ValueError(f"{label}: focus_points 각 항목은 비어있지 않은 문자열이어야 함")
-
-
-def _parse_problem_set(raw: str) -> dict:
-    """문제 세트 JSON 파싱 + 구조 검증. {title, summary, questions} 반환. 실패 시 ValueError."""
-    data = json.loads(_slice_first_json(raw), strict=False)
-    questions = data.get("questions")
-    if not isinstance(questions, list) or len(questions) != 5:
-        n = len(questions) if isinstance(questions, list) else "N/A"
-        raise ValueError(f"questions 5개 필요 (현재 {n})")
-
-    for i, q in enumerate(questions):
-        _validate_question(q, f"q{i}")
-
-    # ct_skill 구성·순서(분해→통합, 각 1개)는 여기서 하드 실패시키지 않는다.
-    # 모델이 한 유형을 중복하거나 누락해도 _reconcile_skills가 보정·보충하므로
-    # 세트 전체를 버리고 재시도(503)하던 근본 원인을 제거한다.
-    return {
-        "title":     (data.get("title") or "").strip(),
-        "summary":   (data.get("summary") or "").strip(),
-        "questions": questions,
-    }
-
-
 def _option_value(option_text: str, label: str) -> str:
     """'B. 22000' → '22000'. 라벨 다음 구분자(. : )) 와 공백을 벗긴다."""
     text = option_text.strip()
@@ -444,629 +399,470 @@ def _run_verification_snippet(snippet: str, code: str = "") -> str:
     return (result.stdout or "").strip()
 
 
-def _verify_one(q: dict, code: str = "") -> tuple:
-    """
-    단일 computational 문항 실행 검증. (ok: bool, detail: str) 반환.
-    conceptual·빈 스니펫은 ok=True.
-    스니펫(=정답값의 근거)을 신뢰한다: 출력값이 정답 라벨 보기와 다르더라도
-    정확히 한 보기와 일치하면 그 라벨로 정답을 교정해 살린다(모델의 라벨 실수 구제).
-    어느 보기와도 안 맞을 때만 실패 → 재생성/스킵.
-    code: 원본 프로그램. 스니펫이 그 함수·전역을 참조할 수 있도록 주입한다.
-    """
-    if q.get("answer_type") != "computational":
-        return (True, "skip (conceptual)")
-    snippet = (q.get("verification_snippet") or "").strip()
-    if not snippet:
-        return (True, "skip (empty)")
-    options = q.get("options", [])
-    ans_label = q.get("answer", "")
-    ans_option = next((o for o in options if o.strip().startswith(ans_label)), "")
-    expected = _option_value(ans_option, ans_label)
-    try:
-        actual = _run_verification_snippet(snippet, code)
-    except subprocess.TimeoutExpired:
-        return (False, f"타임아웃 ({VERIFY_TIMEOUT_SEC}s)")
-    except Exception as e:
-        return (False, f"실행 오류 — {e}")
-    if _values_match(actual, expected):
-        return (True, f"일치 {actual!r}")
+# ══════════════════════════════════════════════════════════════════
+# 문항 생성 (question_generation_revision.md) — 전부 4지선다
+#   경로 A(결정적, LLM 없음): 유형 1 문제분해
+#   경로 B(LLM + verification_snippet 실행 검증): 유형 3·4·5
+# ══════════════════════════════════════════════════════════════════
 
-    # 라벨이 틀렸을 수 있다 — 스니펫 출력과 일치하는 보기가 정확히 하나면 정답 라벨을 교정.
-    matches = [o.strip()[0] for o in options
-               if o.strip()[:1] in ("A", "B", "C", "D")
-               and _values_match(actual, _option_value(o, o.strip()[0]))]
-    if len(matches) == 1:
-        old = q.get("answer")
-        q["answer"] = matches[0]
-        return (True, f"정답 라벨 교정 {old}→{matches[0]} (스니펫 출력 {actual!r})")
-    return (False, f"불일치 stdout={actual!r}, 정답 보기={expected!r}")
+# ── 경로 B 공통: 단일 문항 파싱·검증·실행검증 ──────────────────────
 
 
-def _parse_single_problem(raw: str, expected_ct_skill: str = None) -> dict:
-    """단일 문항 JSON 파싱 + 검증. 재생성 응답용 — 세트 생성과 동일한 검증 경로(_validate_question)를 탄다."""
+# ── 경로 B 공통: 단일 문항 파싱·검증 + 정답을 실행값으로 확정 ──────────
+# 핵심: 9B가 보기 값을 실행 출력과 글자까지 똑같이 못 맞춰 스킵되던 문제를 없앤다.
+# 사양 §3 "정답은 반드시 snippet 실행값" 원칙대로, 서버가 정답 보기를 실행값으로 '확정'하고
+# 나머지 보기만 서로 다르게 보정한다 → 검증 불일치로 문항이 버려지지 않아 항상 5문항.
+def _validate_typed(q: dict) -> None:
+    """유형 3·4·5 LLM 문항의 필드·구조 검증(보기 중복은 뒤에서 보정하므로 여기선 허용)."""
+    if not isinstance(q, dict):
+        raise ValueError("JSON 객체가 아님")
+    if not q.get("stem"):
+        raise ValueError("stem 없음")
+    opts = q.get("options")
+    if not (isinstance(opts, list) and len(opts) == 4):
+        n = len(opts) if isinstance(opts, list) else "N/A"
+        raise ValueError(f"options 4개 필요(현재 {n})")
+    ai = q.get("answer_index")
+    if not (isinstance(ai, int) and 0 <= ai <= 3):
+        raise ValueError(f"answer_index 오류: {ai!r}")
+    vs = q.get("verification_snippet")
+    if not (isinstance(vs, str) and vs.strip()):
+        raise ValueError("verification_snippet 없음")
+    fp = q.get("focus_points")
+    if not (isinstance(fp, list) and 1 <= len(fp) <= 3
+            and all(isinstance(x, str) and x.strip() for x in fp)):
+        raise ValueError("focus_points 1~3개 필요")
+    if _has_cjk(q.get("stem")) or any(_has_cjk(o) for o in opts) or _has_cjk(q.get("explanation")):
+        raise ValueError("중국어(한자) 혼입")
+
+
+def _parse_typed_question(raw: str) -> dict:
+    """유형 3·4·5 단일 문항 JSON 파싱 + 구조 검증."""
     q = json.loads(_slice_first_json(raw), strict=False)
-    _validate_question(q, "재생성 문항")
-    if expected_ct_skill:
-        q["ct_skill"] = expected_ct_skill   # 시스템이 요구한 CT 요소로 강제 정렬
+    _validate_typed(q)
     return q
 
 
-def _regenerate_question(ct_skill: str, code: str, templates: str, log_label: str = "") -> dict | None:
-    """지정 CT 유형 문항 1개를 단일 생성·검증한다. 최대 VERIFY_RETRY_LIMIT회 시도.
-    검증 통과 문항을 반환하고, 전부 실패하면 None. (검증 실패 문항 재생성·유형 보충 공용)"""
-    tag = f"{log_label}{ct_skill}"
+def _value_variants(s: str) -> list:
+    """정답값 s와 '다르지만 그럴듯한' 오답 후보들(숫자면 ±, 여러 줄이면 줄 가감)."""
+    s = (s or "").strip()
+    out = []
+    try:
+        f = float(s.replace(",", "")); is_num = True
+    except ValueError:
+        f = None; is_num = False
+    if is_num:
+        n = int(f) if f.is_integer() else f
+        for d in (1, -1, 2, -2, 10, -10):
+            v = n + d
+            out.append(str(int(v) if isinstance(n, int) else round(v, 2)))
+        if n:
+            out.append(str(int(n * 2) if isinstance(n, int) else round(n * 2, 2)))
+    else:
+        lines = s.split("\n")
+        if len(lines) > 1:
+            out += ["\n".join(lines[:-1]), "\n".join(lines[1:]), s + "\n(끝)", lines[-1], lines[0]]
+        out += ["(출력 없음)", s + " ", s + "?"]
+    uniq = []
+    for v in out:
+        if v != s and v not in uniq:
+            uniq.append(v)
+    return uniq
+
+
+def _ensure_distinct(options: list, answer_index: int) -> list:
+    """answer_index 보기는 고정(실행값). 비었거나 겹치는 나머지 보기를 변형값으로 바꿔 4개를 서로 다르게."""
+    correct = str(options[answer_index])
+    variants = _value_variants(correct)
+    vi, seen = 0, {correct}
+    for i in range(len(options)):
+        if i == answer_index:
+            continue
+        o = str(options[i]).strip()
+        while (not o) or (o in seen):
+            if vi < len(variants):
+                o = variants[vi]; vi += 1
+            else:
+                o = correct + (" " * (i + 1))   # 최후 수단
+        seen.add(o)
+        options[i] = o
+    return options
+
+
+def _deterministic_fallback(slot: dict, python_code: str) -> dict | None:
+    """LLM이 끝내 실패하면 코드 실행 결과로 문항을 결정적으로 만든다(5문항 보장용)."""
+    actual = _run_code_stdout(python_code)
+    if not actual:
+        return None
+    lines = actual.split("\n")
+    t = slot["type"]
+    if t == "mid_output" and len(lines) >= 2:
+        k = max(1, (len(lines) + 1) // 2)
+        stem = f"위 코드를 실행할 때 처음 {k}줄까지 출력된 내용은?"
+        correct, note = "\n".join(lines[:k]), "중간 출력(처음 일부 줄)"
+    elif t == "pattern" and len(lines) >= 2:
+        k = max(1, len(lines) - 1)
+        stem = f"위 코드를 실행할 때 {k}번째로 출력되는 줄은?"
+        correct, note = lines[k - 1], "n번째 출력 줄"
+    else:
+        stem, correct, note = "위 코드를 실행하면 최종 출력은?", actual, "전체 출력"
+    options = _ensure_distinct([correct, "", "", ""], 0)
+    order = list(range(4)); random.shuffle(order)
+    opts = [options[i] for i in order]
+    return {
+        "type": t, "ct_skill": slot["ct_skill"], "code_kind": slot["code_kind"],
+        "answer_type": slot["answer_type"], "stem": stem,
+        "options": opts, "answer_index": order.index(0),
+        "verification_snippet": "", "explanation": f"코드를 실제로 실행한 {note} 결과입니다.",
+        "focus_points": ["코드를 한 줄씩 실행하며 출력되는 순서를 따라가기"],
+    }
+
+
+def _gen_typed_with_retry(slot: dict, python_code: str, templates: str) -> dict | None:
+    """슬롯(유형 3·4·5) 문항 1개 생성. LLM이 발문·오답을 만들고, 서버가 정답을 실행값으로 확정한다.
+    파싱/실행이 끝내 실패하면 결정적 폴백으로 채워 문항을 스킵하지 않는다(항상 5문항)."""
+    kind, tag = slot["type"], slot["ct_skill"]
     for attempt in range(VERIFY_RETRY_LIMIT):
         raw = None
         try:
-            raw = llm.call_single_problem_gen(code, ct_skill, templates)
-            new_q = _parse_single_problem(raw, expected_ct_skill=ct_skill)
+            raw = llm.call_typed_question_gen(kind, python_code, templates)
+            q = _parse_typed_question(raw)
         except Exception as e:
-            print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 파싱 실패 — {e}")
-            # 파싱 실패 시 원본 LLM 응답을 통째로 로그로 남긴다 (원인 추적용).
+            print(f"[gen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 파싱/검증 실패 — {e}")
             if raw is not None:
-                print(f"[regen {tag}] 원본 응답 ↓↓↓\n{raw}\n[regen {tag}] 원본 응답 ↑↑↑")
+                print(f"[gen {tag}] 원본 응답 ↓↓↓\n{raw}\n[gen {tag}] 원본 응답 ↑↑↑")
             continue
-        if not _options_ok(new_q.get("options", [])) or _q_has_cjk(new_q):
-            why = "보기 손상" if not _options_ok(new_q.get("options", [])) else "중국어 혼입"
-            print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} {why} — 재시도")
-            continue
-        ok, detail = _verify_one(new_q, code)
-        if ok:
-            print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 성공 — {detail}")
-            return new_q
-        print(f"[regen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 검증 실패 — {detail}")
-    return None
-
-
-def _reconcile_skills(questions: list, code: str, templates: str) -> list:
-    """문항들을 기대 CT 유형 구성·순서(PROBLEM_CT_SKILLS: 분해→통합, 각 1개)에 맞춘다.
-
-    모델이 한 유형을 중복하거나 누락해도(예: 통합 누락·패턴인식 중복) 세트를 버리지 않고:
-      - 각 기대 유형에 해당하는 첫 문항을 순서대로 배치(잉여 중복은 버림)
-      - 누락된 유형은 단일 생성으로 보충
-    이 함수가 'ct_skill 순서 오류' 503의 근본 해결책이다."""
-    by_skill = {}
-    for q in questions:
-        by_skill.setdefault(q.get("ct_skill"), []).append(q)
-
-    present = tuple(q.get("ct_skill") for q in questions)
-    if present != PROBLEM_CT_SKILLS:
-        print(f"[reconcile] ct_skill 구성 보정 — 현재 {present} → 기대 {PROBLEM_CT_SKILLS}")
-
-    result = []
-    for skill in PROBLEM_CT_SKILLS:
-        bucket = by_skill.get(skill)
-        if bucket:
-            q = bucket.pop(0)
-            q["ct_skill"] = skill   # 라벨 정규화
-            result.append(q)
-        else:
-            print(f"[reconcile] '{skill}' 유형 누락 — 단일 생성으로 보충")
-            gen = _regenerate_question(skill, code, templates, log_label="reconcile ")
-            if gen is not None:
-                result.append(gen)
-            else:
-                print(f"[reconcile] '{skill}' 보충 실패 → 해당 유형 제외")
-    return result
-
-
-def _process_questions(questions: list, code: str, templates: str) -> list:
-    """
-    spec §3.4 — 검증 실패한 computational 문항만 최대 VERIFY_RETRY_LIMIT회 재생성.
-    재생성도 모두 실패하면 그 문항을 결과에서 제외(skip, 정답 보기 덮어쓰지 않음).
-    conceptual은 그대로 통과.
-    """
-    out = []
-    for i, q in enumerate(questions):
-        ct_skill = q.get("ct_skill", "")
-        # 코드로 만든 특수 유형(실행순서·패턴·분해)은 보기를 코드가 구성하므로 손상 검사·재생성 제외.
-        is_special = q.get("type") in ("execution_order", "pattern", "decomposition")
-
-        # 코드 MCQ 보기 손상(한 칸에 몰림·중복·필드명 누출) 또는 한자 혼입 → 단일 재생성
-        if not is_special and (not _options_ok(q.get("options", [])) or _q_has_cjk(q)):
-            reason = "보기 손상" if not _options_ok(q.get("options", [])) else "중국어 혼입"
-            print(f"[clean q{i} {ct_skill}] {reason} → 단일 재생성")
-            replaced = _regenerate_question(ct_skill, code, templates, log_label=f"q{i} ")
-            if replaced is not None:
-                out.append(replaced)
-            else:
-                print(f"[skip q{i} {ct_skill}] {reason} 재생성 실패 → 문항 제외")
-            continue
-
-        ok, detail = _verify_one(q, code)
-        if ok:
-            out.append(q)
-            continue
-
-        print(f"[verify q{i} {ct_skill}] 초기 실패 — {detail}")
-        replaced = _regenerate_question(ct_skill, code, templates, log_label=f"q{i} ")
-        if replaced is not None:
-            out.append(replaced)
-        else:
-            print(f"[skip q{i} {ct_skill}] 재생성 {VERIFY_RETRY_LIMIT}회 실패 → 문항 제외")
-            # 스킵: out에 추가하지 않음. 정답은 절대 덮어쓰지 않음.
-    return out
-
-
-# ══════════════════════════════════════════════════════════════════
-# 코드 트랙 — '실행 순서 고르기' (quiz_spec.md §4.A 우선순위 1)
-# 원칙: 정답·보기를 LLM이 아니라 '실행 트레이스 + 코드'로 결정(100% 결정적).
-# 알고리즘적사고 슬롯을 교체하며, 실패 시 기존 코드 문항으로 폴백(회귀 0).
-# 기존 _verify_one(스니펫 실행검증)은 건드리지 않는다(answer_type='conceptual'로 우회).
-# ══════════════════════════════════════════════════════════════════
-
-EXEC_TRACE_TIMEOUT = 2          # 트레이스 실행 타임아웃(초) — quiz_spec §8
-_CIRCLED = "①②③④⑤⑥⑦⑧"
-
-# settrace로 <usercode> 프레임의 'line' 이벤트 줄번호만 순서대로 수집하는 러너.
-_TRACER_RUNNER = (
-    "import sys, json, io, contextlib\n"
-    "_USERCODE = {code!r}\n"
-    "_seq = []\n"
-    "def _tr(frame, event, arg):\n"
-    "    if frame.f_code.co_filename == '<usercode>':\n"
-    "        if event == 'line':\n"
-    "            _seq.append(frame.f_lineno)\n"
-    "        return _tr\n"
-    "    return None\n"
-    "try:\n"
-    "    _compiled = compile(_USERCODE, '<usercode>', 'exec')\n"
-    "    sys.settrace(_tr)\n"
-    "    with contextlib.redirect_stdout(io.StringIO()):\n"
-    "        exec(_compiled, {{'__name__': '__main__'}})\n"
-    "except Exception as _e:\n"
-    "    sys.settrace(None)\n"
-    "    print('TRACE_ERROR:' + repr(_e))\n"
-    "    sys.exit(2)\n"
-    "finally:\n"
-    "    sys.settrace(None)\n"
-    "print(json.dumps(_seq))\n"
-)
-
-
-def _run_tracer(code: str):
-    """code를 격리 subprocess에서 settrace로 실행해 줄번호 실행 순서(list[int])를 반환.
-    실패·타임아웃·런타임에러면 None. (_run_verification_snippet과 같은 격리·타임아웃 패턴)"""
-    program = _TRACER_RUNNER.format(code=code)
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8")
-    try:
-        tmp.write(program)
-        tmp.close()
-        result = subprocess.run(
-            [sys.executable, tmp.name], capture_output=True, text=True,
-            timeout=EXEC_TRACE_TIMEOUT, encoding="utf-8",
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        )
-    except subprocess.TimeoutExpired:
-        return None
-    except Exception:
-        return None
-    finally:
+        snippet = (q.get("verification_snippet") or "").strip()
         try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-    if result.returncode != 0:
-        return None
-    last = (result.stdout or "").strip().splitlines()
-    if not last:
-        return None
-    try:
-        seq = json.loads(last[-1])
-    except (ValueError, IndexError):
-        return None
-    return seq if isinstance(seq, list) and all(isinstance(x, int) for x in seq) else None
-
-
-def _labelable_linenos(code: str) -> set:
-    """라벨 가능한 줄 = AST상 '실행문(statement)'의 시작 줄.
-    함수/클래스 정의·import는 제외. 다중행 데이터 리터럴(list/dict의 항목 줄 등)은
-    한 statement의 일부라 시작 줄 하나만 들어가므로, 데이터 나열이 라벨을 잠식하지 않는다."""
-    import ast
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return set()
-    skip = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)
-    return {node.lineno for node in ast.walk(tree)
-            if isinstance(node, ast.stmt) and not isinstance(node, skip)}
-
-
-# 실행 순서 고르기는 '처음 실행되는 순서'(앞 N개 실행문의 first-occurrence 순열)로 출제한다.
-# 실제 생성 코드는 함수+루프로 전체 트레이스가 수십 스텝이라 MCQ에 부적합하므로,
-# 함수 정의보다 호출이 먼저 실행되는 등 '줄 번호 순서 ≠ 실행 순서'를 묻는 순열 문항으로 한다.
-_EXEC_PICK = 4   # 보기에 쓸 줄 개수(처음 실행되는 앞 N개)
-
-
-def _first_exec_order(trace: list, label_lines: set) -> list:
-    """라벨 대상 줄을 '처음 실행되는' 순서로 중복 없이 나열한 줄번호 리스트."""
-    seen, order = set(), []
-    for ln in trace:
-        if ln in label_lines and ln not in seen:
-            seen.add(ln)
-            order.append(ln)
-    return order
-
-
-def _perm_distractors(answer: tuple) -> list:
-    """순열 정답에서 두 위치를 바꾼 오답 순열들(정답과 상이·상호 유일)."""
-    a = list(answer)
-    seen, out = {tuple(answer)}, []
-    for i in range(len(a)):
-        for j in range(i + 1, len(a)):
-            m = a[:]
-            m[i], m[j] = m[j], m[i]
-            t = tuple(m)
-            if t not in seen:
-                seen.add(t)
-                out.append(t)
-    return out
-
-
-def _build_execution_order(code: str):
-    """실행 순서 고르기 문항 1개. 트레이스→처음 실행 순서→라벨→오답→셔플.
-    줄번호 순서와 실행 순서가 같거나(너무 쉬움) 부적합하면 None(→ 코드형 폴백)."""
-    code = _clean_code(code)         # 코드 사이 마크다운 잔재(--- 등) 제거 → compile 가능하게
-    trace = _run_tracer(code)
-    if not trace:
-        return None
-    src_lines = code.split("\n")
-    label_lines = _labelable_linenos(code)
-    first_order = _first_exec_order(trace, label_lines)
-    if len(first_order) < _EXEC_PICK:
-        return None
-    chosen_exec = first_order[:_EXEC_PICK]        # 처음 실행되는 앞 N줄(= 실행 순서)
-    by_source = sorted(chosen_exec)               # 소스(줄번호) 순서 = 라벨 ①②③④
-    label = {ln: i for i, ln in enumerate(by_source)}
-    answer = tuple(label[ln] for ln in chosen_exec)   # 실행 순서를 라벨로
-    if answer == tuple(range(len(by_source))):    # 줄번호 순 == 실행 순 → 너무 쉬움 → 폴백
-        return None
-    distractors = _perm_distractors(answer)
-    if len(distractors) < 3:
-        return None
-    cands = [answer] + distractors[:3]
-
-    def fmt(t):
-        return " → ".join(_CIRCLED[i] for i in t)
-
-    order = list(range(4))
-    random.shuffle(order)
-    shuffled = [cands[i] for i in order]
-    options = [f"{chr(65 + i)}. {fmt(t)}" for i, t in enumerate(shuffled)]
-    answer_label = chr(65 + order.index(0))
-
-    labeled = "\n".join(f"{_CIRCLED[i]} {src_lines[ln - 1].strip()}"
-                        for i, ln in enumerate(by_source))
-    stem = ("다음 코드에서 아래 ①~④ 줄이 '처음 실행되는' 순서로 옳은 것은?\n" + labeled)
-    return {
-        "ct_skill":     "알고리즘적사고",
-        "question":     stem,
-        "options":      options,
-        "answer":       answer_label,
-        "answer_type":  "conceptual",       # _verify_one(스니펫 실행)이 건드리지 않게
-        "type":         "execution_order",  # quiz_spec §5 추가 필드
-        "track":        "code",
-        "verify_method": "trace",
-        "verified":     True,
-        "explanation":  "함수는 정의된 줄이 아니라 '호출될 때' 안쪽 줄이 실행돼요. "
-                        "줄 번호 순서가 아니라 실제 호출 흐름을 따라간 순서가 정답이에요.",
-        "focus_points": ["함수 정의보다 그 함수를 '부르는 줄'이 먼저 실행돼요",
-                         "위에서 아래가 아니라 실제 호출 흐름을 따라가 보기"],
-        "_exec_lines":  by_source,           # 라벨 순서(소스순) — 검증 재현용
-    }
-
-
-def _validate_execution_order(code: str, q: dict) -> bool:
-    """검증 게이트: 트레이스 재현(결정성) + 보기 4개 상이 + 정답이 실행 순서와 일치."""
-    if not q or q.get("type") != "execution_order":
-        return False
-    opts = q.get("options", [])
-    if len(opts) != 4 or len({o.split(". ", 1)[-1] for o in opts}) != 4:
-        return False                 # 보기 4개가 모두 서로 달라야(정답 유일)
-    by_source = q.get("_exec_lines")
-    if not by_source:
-        return False
-    code = _clean_code(code)         # build와 동일하게 정제(줄 번호 일관)
-    trace = _run_tracer(code)        # 트레이스 재현(결정성)
-    if not trace:
-        return False
-    label = {ln: i for i, ln in enumerate(by_source)}
-    chosen = set(by_source)
-    seen, exec_order = set(), []     # 선택된 줄들의 첫 실행 순서 재계산
-    for ln in trace:
-        if ln in chosen and ln not in seen:
-            seen.add(ln)
-            exec_order.append(label[ln])
-    if len(exec_order) != len(by_source):
-        return False
-    expected = " → ".join(_CIRCLED[i] for i in exec_order)
-    ans_opt = next((o for o in opts if o.startswith(q.get("answer", "") + ".")), "")
-    return ans_opt.split(". ", 1)[-1] == expected
-
-
-def _apply_execution_order(questions: list, code: str) -> list:
-    """알고리즘적사고 슬롯을 '실행 순서 고르기'로 교체. 실패 시 기존 코드 문항 유지."""
-    out = []
-    for q in questions:
-        if q.get("ct_skill") == "알고리즘적사고":
-            eq = _build_execution_order(code)
-            if eq and _validate_execution_order(code, eq):
-                out.append(eq)
-                continue
-            print("[execution_order] 생성/검증 실패 → 기존 코드 문항 유지")
-        out.append(q)
-    return out
-
-
-# ══════════════════════════════════════════════════════════════════
-# 비코드 트랙 — 패턴인식(규칙 검증) · 분해(intent-first) (quiz_spec §4.B)
-# 패턴: 코드가 규칙(공차·공비·주기)으로 수열·정답·오답을 결정 → 자동 검증(LLM 미사용).
-# 분해: LLM이 intent-first로 저작 → 구조 검증 + 사람 검수(verified=False, 자동검증 불가).
-# 코드 트랙·_verify_one은 불변. 분해/패턴인식 슬롯만 교체(실패 시 코드형 폴백).
-# ══════════════════════════════════════════════════════════════════
-
-_PATTERN_SHOW = 4   # 보여줄 항 수(그다음 항이 정답)
-_PATTERN_DECOYS = ["◆", "★", "○", "□", "♠", "♥"]
-
-
-def _pattern_term(rule: dict, n: int):
-    """규칙으로 n번째(0-index) 항을 계산한다(자동 검증의 단일 출처)."""
-    t = rule["type"]
-    if t == "arithmetic":
-        return rule["start"] + rule["step"] * n
-    if t == "geometric":
-        return rule["start"] * (rule["ratio"] ** n)
-    if t == "cycle":
-        seq = rule["seq"]
-        return seq[n % len(seq)]
-    raise ValueError(f"알 수 없는 규칙: {t}")
-
-
-# 코드 소재(단위)로 패턴 문항의 맥락을 잡는다 → 코드와 동떨어지지 않게(사용자 피드백).
-_PATTERN_THEMES = [
-    ("원", "어떤 물건의 가격이 다음과 같이 바뀌어요.", "money"),
-    ("점", "어떤 학생의 점수가 다음과 같이 바뀌어요.", "small"),
-    ("명", "어떤 모임에 모인 사람 수가 다음과 같이 바뀌어요.", "small"),
-    ("개", "어떤 물건의 개수가 다음과 같이 바뀌어요.", "small"),
-    ("권", "쌓인 책의 권수가 다음과 같이 바뀌어요.", "small"),
-    ("회", "어떤 일을 한 횟수가 다음과 같이 바뀌어요.", "small"),
-]
-
-
-def _infer_pattern_theme(code: str):
-    """코드에 등장하는 단위로 패턴 맥락(단위·도입문·수 규모)을 고른다. 없으면 추상 수열."""
-    for unit, intro, scale in _PATTERN_THEMES:
-        if unit in (code or ""):
-            return unit, intro, scale
-    return "", "", "small"
-
-
-def _gen_pattern_rule(scale: str, unit: str) -> dict:
-    kind = random.choice(["arithmetic", "geometric", "cycle"])
-    if unit and kind == "cycle":            # 실생활 단위가 있으면 숫자 규칙(주기 도형 제외)
-        kind = random.choice(["arithmetic", "geometric"])
-    if kind == "cycle":
-        base = random.choice([["▲", "●", "■"], ["●", "■", "▲", "◆"], ["1", "2", "3"], ["가", "나", "다"]])
-        return {"type": "cycle", "seq": base, "label": "주기적으로 반복되는", "unit": ""}
-    if scale == "money":                    # 가격: 둥근 수(1000·2000·4000·8000 …)
-        if kind == "arithmetic":
-            return {"type": "arithmetic", "start": random.choice([500, 1000, 2000, 3000]),
-                    "step": random.choice([500, 1000, 2000]), "label": "일정한 값을 더하는", "unit": unit}
-        return {"type": "geometric", "start": random.choice([500, 1000]), "ratio": 2,
-                "label": "일정한 값을 곱하는(두 배씩 늘어나는)", "unit": unit}
-    if kind == "arithmetic":
-        return {"type": "arithmetic", "start": random.randint(1, 9),
-                "step": random.choice([2, 3, 4, 5]), "label": "일정한 수를 더하는", "unit": unit}
-    return {"type": "geometric", "start": random.choice([1, 2, 3]),
-            "ratio": random.choice([2, 3]), "label": "일정한 수를 곱하는", "unit": unit}
-
-
-def _pattern_cell_str(rule: dict, n: int) -> str:
-    """n번째 항을 단위까지 붙여 표시 문자열로(검증·표시 단일 출처)."""
-    v = _pattern_term(rule, n)
-    if rule["type"] == "cycle":
-        return str(v)
-    return f"{v}{rule.get('unit', '')}"
-
-
-def _pattern_distractors(rule: dict, shown: list, answer):
-    """규칙별 흔한 오개념 오답 3개(정답과 상이·상호 유일). ±1 같은 어색한 값은 안 쓴다."""
-    seen, out = {answer}, []
-    if rule["type"] == "cycle":
-        pool = [s for s in dict.fromkeys(rule["seq"]) if s != answer]
-        pool += [d for d in _PATTERN_DECOYS if d not in rule["seq"]]
-    elif rule["type"] == "arithmetic":
-        d = rule["step"]
-        pool = [shown[-1], answer + d, answer + 2 * d, shown[-1] * 2]   # 직전항·과다·등비 착각
-    else:  # geometric
-        r = rule["ratio"]
-        diff = shown[-1] - shown[-2]
-        pool = [shown[-1], answer * r, shown[-1] + diff, answer + shown[-1]]  # 직전·과다·등차 착각·합
-    for v in pool:
-        ok = (v != answer and v not in seen)
-        if rule["type"] != "cycle":
-            ok = ok and isinstance(v, int) and v >= 0
-        if ok:
-            seen.add(v)
-            out.append(v)
-        if len(out) == 3:
-            break
-    return out
-
-
-def _build_pattern_question(code: str = ""):
-    """비코드 패턴인식 문항 1개. 코드 소재(단위)로 맥락을 잡고, 규칙으로 수열·정답·오답을 결정."""
-    unit, intro, scale = _infer_pattern_theme(code)
-    rule = _gen_pattern_rule(scale, unit)
-    show_n = (max(_PATTERN_SHOW, len(rule["seq"]) + 1) if rule["type"] == "cycle"
-              else _PATTERN_SHOW)
-    shown = [_pattern_term(rule, i) for i in range(show_n)]
-    answer = _pattern_term(rule, show_n)
-    distractors = _pattern_distractors(rule, shown, answer)
-    if len(distractors) < 3:
-        return None
-
-    def fmt(v):
-        return str(v) if rule["type"] == "cycle" else f"{v}{rule.get('unit', '')}"
-
-    sep = " " if rule["type"] == "cycle" else ", "
-    disp = sep.join(_pattern_cell_str(rule, i) for i in range(show_n)) + sep + "?"
-    ans_str = _pattern_cell_str(rule, show_n)
-    cands = [ans_str] + [fmt(d) for d in distractors]
-    if len(set(cands)) != 4:
-        return None
-    order = list(range(4))
-    random.shuffle(order)
-    shuffled = [cands[i] for i in order]
-    options = [f"{chr(65 + i)}. {s}" for i, s in enumerate(shuffled)]
-    answer_label = chr(65 + order.index(0))
-    intro_line = (intro if (unit and rule["type"] != "cycle")
-                  else f"다음은 {rule['label']} 규칙으로 이어지는 나열이에요.")
-    stem = f"{intro_line} ?에 들어갈 것으로 알맞은 것은?\n{disp}"
-    return {
-        "ct_skill":     "패턴인식",
-        "question":     stem,
-        "options":      options,
-        "answer":       answer_label,
-        "answer_type":  "conceptual",
-        "type":         "pattern",
-        "track":        "noncode",
-        "verify_method": "rule",
-        "verified":     True,
-        "explanation":  f"앞의 항들을 보면 {rule['label']} 규칙이에요. "
-                        "그 규칙을 다음에 그대로 적용한 것이 정답이에요.",
-        "focus_points": ["앞의 항끼리 어떻게 변하는지(더하기·곱하기·반복) 살펴보기",
-                         "찾은 규칙을 다음 항에 그대로 적용하기"],
-        "_pattern_rule":   rule,
-        "_pattern_answer": ans_str,
-    }
-
-
-def _verify_pattern_question(q: dict) -> bool:
-    """규칙으로 정답 항을 재계산해 보기와 일치하는지 자동 검증(quiz_spec §4.B)."""
-    if not q or q.get("type") != "pattern":
-        return False
-    opts = q.get("options", [])
-    if len(opts) != 4 or len({o.split(". ", 1)[-1] for o in opts}) != 4:
-        return False
-    rule = q.get("_pattern_rule")
-    if not rule:
-        return False
-    show_n = (max(_PATTERN_SHOW, len(rule["seq"]) + 1) if rule["type"] == "cycle"
-              else _PATTERN_SHOW)
-    recomputed = _pattern_cell_str(rule, show_n)
-    ans_opt = next((o for o in opts if o.startswith(q.get("answer", "") + ".")), "")
-    return ans_opt.split(". ", 1)[-1] == recomputed and recomputed == q.get("_pattern_answer")
-
-
-def _decomp_distractors(steps: list) -> list:
-    """정답 단계 순서에서 흔한 오개념 오답(순서 바꾸기·단계 합치기[누락]·역순)을 만든다.
-    정답(steps 원순서)과 다르고 상호 유일. quiz_spec §4.B."""
-    seen, out = {tuple(steps)}, []
-
-    def add(seq):
-        t = tuple(seq)
-        if len(t) >= 2 and t not in seen:
-            seen.add(t)
-            out.append(list(seq))
-
-    for i in range(len(steps) - 1):              # 인접 두 단계 순서 바꾸기
-        m = steps[:]
-        m[i], m[i + 1] = m[i + 1], m[i]
-        add(m)
-    for i in range(len(steps)):                  # 한 단계 빼기(두 단계 합치기 → 단계 수 -1)
-        add(steps[:i] + steps[i + 1:])
-    if len(steps) >= 3:                          # 역순
-        add(steps[::-1])
-    return out
-
-
-def _build_decomposition_question(code: str = "", templates: str = ""):
-    """비코드 분해 문항 1개. LLM은 intent-first로 '정답 단계(steps)'만 저작하고,
-    정답 보기·오답은 코드가 steps로 구성한다(정답이 구조적으로 확정 → MCQ 내적 일관).
-    code: 소재 참고용 — 코드가 다루는 일과 관련된 상황으로 만들되 코드는 노출하지 않는다.
-    단, steps가 상황을 올바로 분해했는지는 자동 검증 불가 → verified=False(사람 검수).
-    실패 시 None(→ 코드형 폴백)."""
-    for attempt in range(VERIFY_RETRY_LIMIT):
-        try:
-            raw = llm.call_decomposition_gen(code, templates)
-            d = json.loads(_slice_first_json(raw), strict=False)
+            actual = _run_verification_snippet(snippet, python_code)
         except Exception as e:
-            print(f"[decomposition] {attempt + 1}/{VERIFY_RETRY_LIMIT} 파싱 실패 — {e}")
+            print(f"[gen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 스니펫 실행 실패 — {e}")
             continue
-        situation = (d.get("situation") or "").strip()
-        steps = [s.strip() for s in (d.get("steps") or []) if isinstance(s, str) and s.strip()]
-        if not situation or not (3 <= len(steps) <= 5) or len(set(steps)) != len(steps):
-            continue
-        if _has_cjk(situation) or any(_has_cjk(s) for s in steps):   # 한자 혼입 → 재시도
-            print(f"[decomposition] {attempt + 1}/{VERIFY_RETRY_LIMIT} 중국어 혼입 — 재시도")
-            continue
-        distractors = _decomp_distractors(steps)
-        cands = [steps] + distractors[:3]
-        opt_texts = [" → ".join(x) for x in cands]
-        if len(set(opt_texts)) != 4:             # 보기 4개가 모두 서로 달라야(정답 유일)
-            continue
-        order = list(range(4))
-        random.shuffle(order)
-        shuffled = [opt_texts[i] for i in order]
-        options = [f"{chr(65 + i)}. {s}" for i, s in enumerate(shuffled)]
-        answer = chr(65 + order.index(0))        # 정답 = 원순서 steps (구조적으로 확정)
-        return {
-            "ct_skill":     "분해",
-            "question":     f"{situation}\n\n이 일을 순서대로 단계로 나눈 것으로 알맞은 것은?",
-            "options":      options,
-            "answer":       answer,
-            "answer_type":  "conceptual",
-            "type":         "decomposition",
-            "track":        "noncode",
-            "verify_method": "authored",   # 단계 자체의 타당성은 사람 검수(자동 검증 불가)
-            "verified":     False,         # quiz_spec §4.B·§9 — 사람 검수 권장
-            "explanation":  (d.get("explanation") or "").strip(),
-            "focus_points": ["작업을 시간·논리 순서의 단계로 나눠 보기",
-                             "단계의 순서가 바뀌거나 빠진 보기를 가려내기"],
-            "_decomp_steps": steps,
-        }
-    print(f"[decomposition] {VERIFY_RETRY_LIMIT}회 실패 → 기존 코드 문항 유지")
-    return None
+        ai = q["answer_index"]
+        q["options"][ai] = actual                       # 정답 = snippet 실행값(§3)
+        q["options"] = _ensure_distinct(q["options"], ai)   # 나머지 보기 서로 다르게
+        q["ct_skill"]   = slot["ct_skill"]
+        q["code_kind"]  = slot["code_kind"]
+        q["answer_type"] = slot["answer_type"]
+        q["type"]       = slot["type"]
+        print(f"[gen {tag}] {attempt+1}/{VERIFY_RETRY_LIMIT} 성공 — 정답={actual[:40]!r}")
+        return q
+    fb = _deterministic_fallback(slot, python_code)
+    print(f"[gen {tag}] LLM {VERIFY_RETRY_LIMIT}회 실패 → "
+          + ("결정적 폴백 사용" if fb else "폴백도 실패(스킵)"))
+    return fb
 
 
-def _apply_noncode_questions(questions: list, code: str = "") -> list:
-    """분해·패턴인식 슬롯을 비코드 문항으로 교체. 실패 시 기존 코드 문항 유지(회귀 0).
-    code: 코드 소재와 연결된 문항이 되도록 빌더에 전달(패턴=단위 맥락, 분해=관련 상황).
-    패턴인식=규칙 자동검증, 분해=구조검증+사람검수(verified=False)."""
+_ORDER_LABELS = ["(가)", "(나)", "(다)", "(라)", "(마)", "(바)", "(사)", "(아)"]
+
+
+def _group_blocks(pseudocode_lines: list) -> list:
+    """의사코드 줄을 '단계 블록'으로 묶는다(들여쓰기 기준, 결정적).
+
+    함수 정의 한 줄이 본문 전체를 삼켜 블록이 2개로 줄어드는 문제(대부분의 의사코드가
+    '함수 정의 + 들여쓴 본문 + 마지막 호출' 꼴)를 피하려고, 블록을 나누는 기준 들여쓰기 수준을
+    고정 0이 아니라 '블록이 3개 이상 나오는 가장 얕은 수준'으로 잡는다.
+    그 수준의 줄(과 그보다 얕은 줄)에서 새 블록이 시작되고, 더 깊은 줄(반복·조건의 본문)은 합쳐진다.
+    → 'i를 …까지 반복:' + 그 본문이 한 블록으로 유지된다(spec §1: 최상위 단계 + 들여쓰기 하위 = 한 블록)."""
+    lines = [str(ln).rstrip() for ln in pseudocode_lines if str(ln).strip()]
+    if not lines:
+        return []
+    indents = sorted({len(ln) - len(ln.lstrip(" ")) for ln in lines})
+
+    def group_at(base: int) -> list:
+        blocks = []
+        for ln in lines:
+            ind = len(ln) - len(ln.lstrip(" "))
+            if ind <= base or not blocks:
+                blocks.append([ln])
+            else:
+                blocks[-1].append(ln)
+        return blocks
+
+    # base 오름차순으로 블록 수는 단조 증가 → 3개 이상 나오는 가장 얕은 base를 쓴다.
+    chosen = group_at(indents[-1])
+    for base in indents:
+        g = group_at(base)
+        if len(g) >= 3:
+            chosen = g
+            break
+    return chosen
+
+
+def _order_distractors(n: int, count: int = 3) -> list:
+    """0..n-1 정답 순서에서 출발한 '틀린 순열' count개(서로 다르고 정답과도 다름).
+    인접 교환·한 원소 이동·역순을 우선 쓰고, 부족하면 무작위 순열로 보충."""
+    correct = tuple(range(n))
+    cands = []
+    for i in range(n - 1):
+        p = list(range(n)); p[i], p[i + 1] = p[i + 1], p[i]
+        cands.append(tuple(p))
+    for i in range(n):
+        rest = [x for x in range(n) if x != i]
+        cands.append((i, *rest))
+        cands.append((*rest, i))
+    cands.append(tuple(reversed(range(n))))
+    seen, out = {correct}, []
+    random.shuffle(cands)
+    for p in cands:
+        if p not in seen:
+            seen.add(p); out.append(p)
+    guard = 0
+    while len(out) < count and guard < 300:
+        p = list(range(n)); random.shuffle(p); p = tuple(p)
+        if p not in seen:
+            seen.add(p); out.append(p)
+        guard += 1
+    return out[:count]
+
+
+def _build_decomposition_order(pseudocode_lines) -> dict | None:
+    """유형 1: 의사코드 블록을 라벨링·셔플해 '순서 고르기' 4지선다를 코드로 구성한다.
+    구조 검증만 — 블록≥3, 보기 4개 서로 다른 순열, 정답 1개. 미달 시 None(스킵)."""
+    if not isinstance(pseudocode_lines, list):
+        return None
+    blocks = _group_blocks(pseudocode_lines)
+    n = len(blocks)
+    if n < 3 or n > len(_ORDER_LABELS):
+        print(f"[type1] 블록 수 {n} — 부적합(3~{len(_ORDER_LABELS)}) → 스킵")
+        return None
+
+    display_perm = list(range(n))
+    random.shuffle(display_perm)                 # 화면 표시 순서(섞음)
+    display_blocks, label_of_orig = [], {}
+    for pos, orig in enumerate(display_perm):
+        label = _ORDER_LABELS[pos]
+        label_of_orig[orig] = label
+        display_blocks.append({"label": label, "lines": blocks[orig]})
+
+    correct_str = "-".join(label_of_orig[orig] for orig in range(n))   # 원래 순서 = 정답
+    distractors = _order_distractors(n, 3)
+    option_strs = [correct_str] + ["-".join(label_of_orig[orig] for orig in perm)
+                                   for perm in distractors]
+    order = list(range(len(option_strs)))
+    random.shuffle(order)
+    options = [option_strs[i] for i in order]
+    answer_index = order.index(0)
+
+    if len(options) != 4 or len(set(options)) != 4:
+        print("[type1] 보기 4개 구성 실패 → 스킵")
+        return None
+
+    return {
+        "type": "order",
+        "ct_skill": "문제분해",
+        "code_kind": "pseudocode",
+        "answer_type": "order",
+        "stem": "위 단계들을 올바른 순서로 나열한 것은?",
+        "blocks": display_blocks,
+        "options": options,
+        "answer_index": answer_index,
+        "verification_snippet": "",
+        "explanation": "들여쓰기로 묶은 각 단계 블록을 원래(올바른) 순서로 되돌린 배열입니다.",
+        "focus_points": ["각 블록이 무슨 일을 하는 단계인지 파악", "먼저 일어나야 하는 단계부터 차례로 나열"],
+    }
+
+
+# ── RAG: 유형 3·4·5만 problem_templates 참조 ───────────────────────
+def _retrieve_template_for(slot: dict, code: str) -> str:
+    """슬롯에 template 파일이 지정된 경우에만 problem_templates에서 가이드를 가져온다(없으면 "")."""
+    src = slot.get("template")
+    if not src:
+        return ""
+    return rag_store.retrieve(
+        "problem_templates", f"{slot['ct_skill']} {code[:200]}", k=2,
+        filter={"source_file": src},
+    ) or ""
+
+
+# ── 유형 2 추상화/알고리즘 (경로 A — 결정적, LLM 없음): 순서도 고르기 ──
+# python_code를 AST로 분석해 구조(반복만 / 반복+조건)를 판별하고, 골격에 실제 조건식·갱신문을
+# 채워 정답 순서도(Mermaid)를 만든다. 오답 3개는 정답 그래프의 통제된 변형이다.
+def _u(node) -> str:
+    """AST 노드를 짧은 소스 텍스트로(순서도 라벨용). 길면 잘라낸다."""
+    try:
+        s = ast.unparse(node)
+    except Exception:
+        s = "..."
+    s = " ".join(s.split())
+    return s[:38] + ("…" if len(s) > 38 else "")
+
+
+def _mm_label(text: str) -> str:
+    """Mermaid 노드 라벨 이스케이프(따옴표로 감싸 쓰므로 큰따옴표·개행만 정리)."""
+    return " ".join(str(text).replace('"', "'").split()) or " "
+
+
+def _mermaid(nodes: list, edges: list) -> str:
+    """(nodes, edges) → Mermaid flowchart 문자열.
+    nodes: [(id, shape, text)] shape ∈ {term, proc, dec}. edges: [(src, dst, label)]."""
+    out = ["flowchart TD"]
+    for nid, shape, text in nodes:
+        t = _mm_label(text)
+        if shape == "term":
+            out.append(f'    {nid}(["{t}"])')
+        elif shape == "dec":
+            out.append(f'    {nid}{{"{t}"}}')
+        else:
+            out.append(f'    {nid}["{t}"]')
+    for src, dst, label in edges:
+        out.append(f'    {src} -- {label} --> {dst}' if label else f'    {src} --> {dst}')
+    return "\n".join(out)
+
+
+def _flow_graph(python_code: str):
+    """단일 함수를 분석해 정답 순서도의 (nodes, edges, structure)를 만든다.
+    structure: 'loop'(반복만) | 'loop_if'(반복+조건). 분석 불가(함수≠1·반복 없음)면 None.
+    → 이 그래프가 곧 'AST 구조와 일치하는 정답'이다(구조 검증 = 빌드 자체)."""
+    try:
+        tree = ast.parse(python_code)
+    except SyntaxError:
+        return None
+    funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    if len(funcs) != 1:
+        return None
+    body = funcs[0].body
+    loop = next((n for n in body if isinstance(n, (ast.For, ast.While))), None)
+    if loop is None:
+        return None
+    li = body.index(loop)
+    init_text = "; ".join(_u(s) for s in body[:li]) or "변수 초기화"
+    out_text = "; ".join(_u(s) for s in body[li + 1:]) or "결과 반환"
+    if isinstance(loop, ast.For):
+        cond_text = f"{_u(loop.target)} ← {_u(loop.iter)} (남은 값 있는가?)"
+    else:
+        cond_text = f"{_u(loop.test)} ?"
+
+    body_if = next((n for n in loop.body if isinstance(n, ast.If)), None)
+    if body_if is None:                                   # 반복만
+        body_text = "; ".join(_u(s) for s in loop.body) or "반복 본문"
+        nodes = [
+            ("S", "term", "시작"), ("I", "proc", init_text), ("C", "dec", cond_text),
+            ("B", "proc", body_text), ("O", "proc", out_text), ("E", "term", "끝"),
+        ]
+        edges = [
+            ("S", "I", ""), ("I", "C", ""),
+            ("C", "B", "예"), ("B", "C", ""),
+            ("C", "O", "아니오"), ("O", "E", ""),
+        ]
+        return (nodes, edges, "loop")
+    # 반복+조건
+    then_text = "; ".join(_u(s) for s in body_if.body) or "처리"
+    nodes = [
+        ("S", "term", "시작"), ("I", "proc", init_text), ("C", "dec", cond_text),
+        ("Q", "dec", f"{_u(body_if.test)} ?"), ("T", "proc", then_text),
+        ("O", "proc", out_text), ("E", "term", "끝"),
+    ]
+    edges = [
+        ("S", "I", ""), ("I", "C", ""),
+        ("C", "Q", "예"), ("Q", "T", "예"), ("Q", "C", "아니오"),
+        ("T", "C", ""), ("C", "O", "아니오"), ("O", "E", ""),
+    ]
+    return (nodes, edges, "loop_if")
+
+
+def _mut_swap_yesno(edges: list) -> list:
+    """조건(C)의 예/아니오 라벨을 뒤바꾼다(반복 종료 조건을 거꾸로 만든 오답)."""
     out = []
-    for q in questions:
-        sk = q.get("ct_skill")
-        nq = None
-        if sk == "패턴인식":
-            nq = _build_pattern_question(code)
-            if nq and not _verify_pattern_question(nq):
-                nq = None
-        elif sk == "분해":
-            nq = _build_decomposition_question(code)
-        if nq:
-            out.append(nq)
-            continue
-        if sk in ("패턴인식", "분해"):
-            print(f"[noncode {sk}] 생성/검증 실패 → 기존 코드 문항 유지")
-        out.append(q)
+    for src, dst, label in edges:
+        if src == "C" and label == "예":
+            label = "아니오"
+        elif src == "C" and label == "아니오":
+            label = "예"
+        out.append((src, dst, label))
     return out
+
+
+def _mut_remove_loopback(edges: list) -> list:
+    """반복 복귀(본문 → 조건) 화살표를 제거(출력으로 보내 '한 번만 실행'되는 오답)."""
+    back_src = "T" if any(s == "T" and d == "C" for s, d, _ in edges) else "B"
+    return [((src, "O", lbl) if (src == back_src and dst == "C" and lbl == "") else (src, dst, lbl))
+            for src, dst, lbl in edges]
+
+
+def _mut_swap_init(edges: list) -> list:
+    """초기화·반복 순서를 뒤바꾼다(초기화가 반복 안으로 들어간 오답): S→C 먼저, 초기화는 '예' 분기 안으로."""
+    yes_target = next((d for s, d, l in edges if s == "C" and l == "예"), "B")
+    out = [("S", "C", "")]
+    for src, dst, lbl in edges:
+        if (src, dst) in (("S", "I"), ("I", "C")):
+            continue
+        if src == "C" and lbl == "예":
+            out.append(("C", "I", "예"))
+            continue
+        out.append((src, dst, lbl))
+    out.append(("I", yes_target, ""))
+    return out
+
+
+def _build_flowchart_question(python_code: str) -> dict | None:
+    """유형 2: AST→순서도 골격→Mermaid 정답 + 통제 변형 오답 3개. 구조 검증: 보기 4개 서로 다름."""
+    g = _flow_graph(python_code)
+    if g is None:
+        print("[type2] 코드 구조 분석 실패(함수≠1 또는 반복 없음) → 스킵")
+        return None
+    nodes, edges, _structure = g
+    option_strs = [_mermaid(nodes, edges)]                      # 정답
+    for mut in (_mut_swap_yesno, _mut_remove_loopback, _mut_swap_init):
+        m = _mermaid(nodes, mut(edges))
+        if m not in option_strs:
+            option_strs.append(m)
+    if len(option_strs) != 4 or len(set(option_strs)) != 4:
+        print(f"[type2] 보기 변형 중복(distinct={len(set(option_strs))}) → 스킵")
+        return None
+    order = list(range(4))
+    random.shuffle(order)
+    options = [option_strs[i] for i in order]
+    answer_index = order.index(0)
+    return {
+        "type": "diagram",
+        "ct_skill": "추상화/알고리즘",
+        "code_kind": "pseudocode",
+        "answer_type": "diagram",
+        "stem": "위 의사코드를 올바르게 나타낸 순서도는?",
+        "options": options,
+        "answer_index": answer_index,
+        "verification_snippet": "",
+        "explanation": "초기화 → 조건 검사 → (참이면) 본문 실행 후 다시 조건으로 돌아가는 반복 구조를 바르게 나타낸 순서도입니다.",
+        "focus_points": ["조건이 참/거짓일 때 흐름이 어디로 가는지", "반복 본문 뒤 다시 조건으로 돌아가는 화살표가 있는지"],
+    }
+
+
+def _build_question_set(python_code: str, pseudocode_lines) -> list:
+    """슬롯 순서대로 문항을 만든다(유형1·2 결정적 + 유형3·4·5 LLM+검증). 실패 슬롯은 스킵."""
+    questions = []
+    for slot in PROBLEM_SLOTS:
+        if slot["type"] == "order":
+            q = _build_decomposition_order(pseudocode_lines)
+        elif slot["type"] == "diagram":
+            q = _build_flowchart_question(python_code)
+        else:
+            q = _gen_typed_with_retry(slot, python_code, _retrieve_template_for(slot, python_code))
+        if q:
+            questions.append(q)
+    return questions
 
 
 def _student_safe_questions(questions: list) -> list:
-    """학생 응답용 문항 필드만 추린다. 내부 전용 필드(focus_points 등)는 제외."""
-    return [
-        {
+    """학생 응답용 문항 필드만 추린다.
+    내부 전용 필드(verification_snippet·focus_points·answer_type)는 제외(§7).
+    answer_index → 라벨(A~D)로 변환해 기존 클라이언트 채점(selectedOption===answer)과 호환한다.
+    유형1(order)은 코드 섹션 표시용 blocks(라벨+줄, 섞인 순서)도 함께 보낸다."""
+    safe = []
+    for q in questions:
+        item = {
             "ct_skill":    q.get("ct_skill"),
-            "question":    q.get("question"),
+            "code_kind":   q.get("code_kind"),       # 프론트 코드 패널 렌더 분기
+            "question":    q.get("stem"),
             "options":     q.get("options"),
-            "answer":      q.get("answer"),
+            "answer":      chr(65 + int(q.get("answer_index", 0))),
             "explanation": q.get("explanation", ""),
-            # quiz_spec §5: 유형 메타. 코드 자체 문항은 None(기존 호환), 신규 유형만 값을 가진다.
             "type":        q.get("type"),
         }
-        for q in questions
-    ]
+        if q.get("type") == "order":
+            item["blocks"] = q.get("blocks")
+        safe.append(item)
+    return safe
 
 
 def _save_problem_set(session_id: str, questions: list) -> None:
@@ -1125,26 +921,87 @@ def _clean_code(code: str) -> str:
     return "\n".join(ln for ln in code.split("\n") if not _MD_LINE_RE.match(ln)).strip()
 
 
-def _gen_code_within_limit(topic: str, ctx: str, difficulty: str) -> str:
-    """코드를 생성하되 (1) CODE_MAX_LINES 초과 또는 (2) 한자(중국어) 혼입이면 재생성한다
-    (최대 CODE_GEN_RETRY회). 9B 모델이 20줄 제한을 어기거나 문자열에 한자를 섞는 문제 대응.
-    전부 부적합하면 가장 나은 후보(한자 없음 우선 → 짧은 것)를 쓴다."""
+def _validate_python_code(code: str) -> tuple:
+    """AST 검증: 구문 정상 / 함수 정확히 1개 / 그 함수 안 반복문>=1 / import·input() 없음. (ok, why).
+    input()은 헤드리스 실행(검증·중간출력)을 막으므로 구조 단계에서 거른다(데이터는 코드에 고정해야 함)."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return (False, f"구문 오류({e.msg})")
+    funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    if len(funcs) != 1:
+        return (False, f"함수 {len(funcs)}개(정확히 1개 필요)")
+    loops = [n for n in ast.walk(funcs[0]) if isinstance(n, (ast.For, ast.While))]
+    if not loops:
+        return (False, "함수 내부 반복문 없음")
+    if any(isinstance(n, (ast.Import, ast.ImportFrom)) for n in ast.walk(tree)):
+        return (False, "import 사용")
+    if any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "input"
+           for n in ast.walk(tree)):
+        return (False, "input() 사용")
+    return (True, "")
+
+
+def _run_code_stdout(code: str):
+    """코드를 격리 실행해 stdout(strip) 반환. 실패·타임아웃이면 None."""
+    try:
+        return _run_verification_snippet(code, "")
+    except Exception:
+        return None
+
+
+def _gen_validated_code(topic: str, ctx: str, difficulty: str) -> str:
+    """코드 생성 + 검증(AST 구조 / 줄수 / 한자 / 실행 stdout>=2줄).
+    하나라도 실패하면 최대 CODE_GEN_RETRY회 재생성. 전부 실패하면 최선 후보."""
     best = None
     for attempt in range(CODE_GEN_RETRY):
-        code = _clean_code(strip_fences(llm.call_code_gen(topic=topic, ctx=ctx, difficulty=difficulty)))
+        try:
+            raw = llm.call_code_gen(topic=topic, ctx=ctx, difficulty=difficulty)
+            code = _clean_code(strip_fences(
+                json.loads(_slice_first_json(raw), strict=False).get("python_code", "")))
+        except Exception as e:
+            print(f"[code-gen] {attempt+1}/{CODE_GEN_RETRY} 파싱 실패 — {e}")
+            continue
+        if not code:
+            continue
         n = _code_line_count(code)
         has_cjk = bool(_CJK_RE.search(code))
-        if n <= CODE_MAX_LINES and not has_cjk:
+        struct_ok, why = _validate_python_code(code)
+        stdout = _run_code_stdout(code)
+        out_lines = len(stdout.split("\n")) if stdout else 0
+        if struct_ok and n <= CODE_MAX_LINES and not has_cjk and out_lines >= 2:
             return code
-        score = n + (1000 if has_cjk else 0)   # 한자 포함은 큰 패널티로 후순위
+        score = ((0 if struct_ok else 4000) + (1000 if has_cjk else 0)
+                 + (0 if out_lines >= 2 else 2000) + n)
         if best is None or score < best[1]:
             best = (code, score)
-        why = []
-        if n > CODE_MAX_LINES: why.append(f"{n}줄>{CODE_MAX_LINES}")
-        if has_cjk: why.append("한자혼입")
-        print(f"[generate-code] {attempt+1}/{CODE_GEN_RETRY} 재생성 — {', '.join(why)}")
-    print("[generate-code] 제한 내 실패 → 가장 나은 후보 사용")
-    return best[0]
+        reasons = []
+        if not struct_ok: reasons.append(why)
+        if n > CODE_MAX_LINES: reasons.append(f"{n}줄>{CODE_MAX_LINES}")
+        if has_cjk: reasons.append("한자혼입")
+        if out_lines < 2: reasons.append(f"출력 {out_lines}줄(<2)")
+        print(f"[code-gen] {attempt+1}/{CODE_GEN_RETRY} 재생성 — {', '.join(reasons)}")
+    print("[code-gen] 제한 내 실패 → 최선 후보 사용")
+    return best[0] if best else ""
+
+
+def _gen_pseudocode(python_code: str) -> list:
+    """python_code를 한글 의사코드 줄 배열로 번역. 실패 시 ≤CODE_GEN_RETRY회 재생성, 끝내 실패하면 []."""
+    for attempt in range(CODE_GEN_RETRY):
+        try:
+            raw = llm.call_pseudocode_gen(python_code)
+            lines = json.loads(_slice_first_json(raw), strict=False).get("pseudocode_lines")
+        except Exception as e:
+            print(f"[pseudocode] {attempt+1}/{CODE_GEN_RETRY} 파싱 실패 — {e}")
+            continue
+        if (isinstance(lines, list) and len(lines) >= 3
+                and all(isinstance(x, str) and x.strip() for x in lines)
+                and not any(_has_cjk(x) for x in lines)
+                and any(k in " ".join(lines) for k in ("반복", "만약", "반환", "출력", "정의"))):
+            return [x.rstrip() for x in lines]
+        print(f"[pseudocode] {attempt+1}/{CODE_GEN_RETRY} 구조 미달 — 재생성")
+    print("[pseudocode] 실패 → 빈 배열(유형1 스킵)")
+    return []
 
 
 @api.route("/generate-code", methods=["POST"])
@@ -1153,70 +1010,35 @@ def generate_code():
     topic = (data.get("topic_hint") or "").strip() or random.choice(CODE_TOPIC_HINTS)
     ctx = rag_store.retrieve("code_examples", topic)
     try:
-        code = _gen_code_within_limit(topic, ctx, TARGET_DIFFICULTY)
+        python_code = _gen_validated_code(topic, ctx, TARGET_DIFFICULTY)
+        if not python_code:
+            return jsonify({"error": "코드 생성 실패"}), 503
+        pseudocode_lines = _gen_pseudocode(python_code)
     except Exception as e:
         return jsonify({"error": str(e)}), 503
-
-    return jsonify({"code": code, "topic": topic})
-
-
-def _retrieve_templates(code: str) -> str:
-    """CT 5유형별 출제 가이드를 검색해 합친다.
-    quiz_spec §7 — type 필터: 각 유형은 자기 코퍼스(ct_{유형}.txt)에서만 retrieve해
-    코드형/비코드 코퍼스가 유형 간에 섞이지 않게 한다(검색 조건화, 인덱싱 불변)."""
-    parts = []
-    for skill in PROBLEM_CT_SKILLS:
-        chunk = rag_store.retrieve(
-            "problem_templates", f"{skill} {code[:200]}", k=2,
-            filter={"source_file": f"ct_{skill}.txt"},
-        )
-        if chunk:
-            parts.append(f"[{skill}]\n{chunk}")
-    return "\n\n".join(parts)
+    return jsonify({
+        "code": python_code,            # 하위호환 별칭
+        "python_code": python_code,
+        "pseudocode_lines": pseudocode_lines,
+        "topic": topic,
+    })
 
 
 @api.route("/generate-problem", methods=["POST"])
 def generate_problem():
-    """한 번 호출로 MCQ 5문항 세트를 생성한다 (분해→통합 순)."""
+    """코드 제시 자산(python_code, pseudocode_lines)으로 4지선다 문항 세트를 생성한다."""
     data = request.get_json() or {}
-    code = data.get("code", "")
-    if not code:
-        return jsonify({"error": "code 필드 필요"}), 400
-    difficulty = TARGET_DIFFICULTY   # 난이도 통일 (클라이언트 입력 무시)
+    python_code = data.get("python_code") or data.get("code", "")
+    if not python_code:
+        return jsonify({"error": "python_code(또는 code) 필드 필요"}), 400
+    pseudocode_lines = data.get("pseudocode_lines") or []
     session_id = (data.get("session_id") or "").strip()
 
-    # 5유형별로 RAG 가이드를 type 필터로 따로 검색해 합친다 (유형별 코퍼스 분리)
-    templates = _retrieve_templates(code)
-
-    # 세트 단위 파싱 재시도 (구조 깨졌을 때만)
-    parsed = None
-    last_error = None
-    for attempt in range(PROBLEM_RETRY_LIMIT):
-        try:
-            raw = llm.call_problem_gen(code, templates, difficulty)
-            parsed = _parse_problem_set(raw)
-            break
-        except Exception as e:
-            last_error = e
-            print(f"[generate-problem set] {attempt+1}/{PROBLEM_RETRY_LIMIT} 파싱 실패: {e}")
-    if parsed is None:
-        return jsonify({"error": str(last_error)}), 503
-
-    # CT 유형 구성 보정(중복/누락 보충)
-    reconciled = _reconcile_skills(parsed["questions"], code, templates)
-    # 알고리즘적사고 슬롯을 '실행 순서 고르기'(트레이스 검증)로 교체(실패 시 코드형 유지).
-    # process_questions보다 먼저 — 교체된 conceptual 문항이 스킵되지 않고 통과하도록.
-    reconciled = _apply_execution_order(reconciled, code)
-    # 분해·패턴인식 슬롯을 코드 소재와 연결된 비코드 문항으로 교체(패턴=단위 맥락, 분해=관련 상황). 실패 시 코드형.
-    reconciled = _apply_noncode_questions(reconciled, code)
-    # 문항별 검증 + 실패시 단일 문항 재생성/스킵 (비코드·실행순서는 conceptual이라 그대로 통과)
-    final_questions = _process_questions(reconciled, code, templates)
-    _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
-    return jsonify({
-        "title":     parsed["title"],
-        "summary":   parsed["summary"],
-        "questions": _student_safe_questions(final_questions),
-    })
+    questions = _build_question_set(python_code, pseudocode_lines)
+    if not questions:
+        return jsonify({"error": "생성된 문제가 없습니다."}), 503
+    _save_problem_set(session_id, questions)   # 내부 보관(focus_points 포함)
+    return jsonify({"questions": _student_safe_questions(questions)})
 
 
 def _gen_session_id() -> str:
@@ -1225,57 +1047,31 @@ def _gen_session_id() -> str:
 
 @api.route("/session/start", methods=["POST"])
 def session_start():
-    """
-    한 번의 호출로 코드 1개 + MCQ 5문항 세트를 생성·반환한다.
-    응답 스키마는 code_reading_generation.md §4 (학생 전송용 — 내부 전용 필드 제외).
-    """
+    """한 번의 호출로 코드 자산(python_code·pseudocode_lines) + 문항 세트를 생성·반환한다."""
     data = request.get_json(silent=True) or {}
-    difficulty = TARGET_DIFFICULTY   # 난이도 통일 (클라이언트 입력 무시)
     topic_hint = (data.get("topic_hint") or "").strip() or random.choice(CODE_TOPIC_HINTS)
 
-    # Stage 1 — 단일 완결 코드 생성
     code_ctx = rag_store.retrieve("code_examples", topic_hint)
     try:
-        raw_code = llm.call_code_gen(topic=topic_hint, ctx=code_ctx, difficulty=difficulty)
-        code = strip_fences(raw_code)
+        python_code = _gen_validated_code(topic_hint, code_ctx, TARGET_DIFFICULTY)
+        if not python_code:
+            return jsonify({"error": "코드 생성 실패"}), 503
+        pseudocode_lines = _gen_pseudocode(python_code)
     except Exception as e:
         return jsonify({"error": f"코드 생성 실패: {e}"}), 503
 
-    # Stage 2 — 5유형별 RAG 가이드(type 필터)를 합치고 MCQ 5문항 일괄 생성
-    templates = _retrieve_templates(code)
-
-    # 세트 단위 파싱 재시도 (구조 깨졌을 때만)
-    parsed = None
-    last_error = None
-    for attempt in range(PROBLEM_RETRY_LIMIT):
-        try:
-            raw_problems = llm.call_problem_gen(code, templates, difficulty)
-            parsed = _parse_problem_set(raw_problems)
-            break
-        except Exception as e:
-            last_error = e
-            print(f"[session/start set] {attempt+1}/{PROBLEM_RETRY_LIMIT} 파싱 실패: {e}")
-    if parsed is None:
-        return jsonify({"error": f"문제 생성 실패: {last_error}"}), 503
-
-    # CT 유형 구성 보정(중복/누락 보충)
-    reconciled = _reconcile_skills(parsed["questions"], code, templates)
-    # 알고리즘적사고 슬롯을 '실행 순서 고르기'(트레이스 검증)로 교체(실패 시 코드형 유지).
-    # process_questions보다 먼저 — 교체된 conceptual 문항이 스킵되지 않고 통과하도록.
-    reconciled = _apply_execution_order(reconciled, code)
-    # 분해·패턴인식 슬롯을 코드 소재와 연결된 비코드 문항으로 교체(패턴=단위 맥락, 분해=관련 상황). 실패 시 코드형.
-    reconciled = _apply_noncode_questions(reconciled, code)
-    # 문항별 검증 + 실패시 단일 문항 재생성/스킵 (비코드·실행순서는 conceptual이라 그대로 통과)
-    final_questions = _process_questions(reconciled, code, templates)
+    questions = _build_question_set(python_code, pseudocode_lines)
+    if not questions:
+        return jsonify({"error": "문제 생성 실패"}), 503
     session_id = _gen_session_id()
-    _save_problem_set(session_id, final_questions)   # 내부 보관(focus_points 포함)
+    _save_problem_set(session_id, questions)
     return jsonify({
-        "session_id": session_id,
-        "title":      parsed["title"],
-        "summary":    parsed["summary"],
-        "difficulty": difficulty,
-        "code":       code,
-        "questions":  _student_safe_questions(final_questions),
+        "session_id":       session_id,
+        "topic":            topic_hint,
+        "code":             python_code,
+        "python_code":      python_code,
+        "pseudocode_lines": pseudocode_lines,
+        "questions":        _student_safe_questions(questions),
     })
 
 

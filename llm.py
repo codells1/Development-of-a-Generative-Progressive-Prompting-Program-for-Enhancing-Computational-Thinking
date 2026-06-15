@@ -74,126 +74,141 @@ SYSTEM_CHAT = (
 
 SYSTEM_CODE = (
     "너는 '코드 읽기' 학습용 파이썬 예제를 만드는 출제자다.\n"
-    "대상 수준: 중학교 3학년~고등학교 1학년. 이 수준에 맞춰 일관되게 만든다 "
-    "(리스트·딕셔너리·문자열, for/while 반복, if 조건, 간단한 함수 정의·호출, 기본 산술까지만 사용. "
-    "클래스·재귀·예외처리·컴프리헨션·람다·외부 라이브러리 등 고급 문법은 쓰지 않는다).\n"
+    "대상 수준: 중학교 3학년~고등학교 1학년 (리스트·딕셔너리·문자열, for/while 반복, if 조건, "
+    "간단한 함수, 기본 산술까지만. 클래스·재귀·예외처리·컴프리헨션·람다·외부 라이브러리·import 금지).\n"
     "규칙:\n"
-    "1. 외부 입력 없이 그대로 실행되는 단일 완결 프로그램 1개. 데이터는 코드 안에 고정, input() 금지.\n"
-    "2. 길이 최대 20줄(권장 12~18줄), 함수 1~2개. 20줄을 절대 넘기지 마라(빈 줄 포함). "
-    "분해·통합 문항을 위해 함수 2개를 권장한다. "
-    "★ 변수·함수 이름은 의미가 드러나는 영문 snake_case로 짓는다(예: total_price, grade_quiz). "
-    "한글 이름(예: 계산_점수)·한글 변수는 쓰지 마라. 식별자는 영문, 주석·문자열 메시지는 한국어로 한다.\n"
-    "3. 권장 형태: 값을 계산하는 함수 1개(반복+조건 포함) + 그 결과를 쓰는 함수 1개(출력/판정).\n"
-    "4. 코드에는 (a)함수 또는 처리 단계 2개 이상, (b)반복문, (c)함수로 세부를 감춘 부분, "
-    "(d)조건 분기, (e)부분이 합쳐져 하나의 목적을 이루는 구조가 모두 있어야 한다.\n"
-    "5. 아래 참고 예시가 있다면 구조·스타일만 본뜨고 그대로 복사하지 마라.\n"
-    "6. 출력은 파이썬 코드 블록 하나만. 설명 문장·JSON 금지."
+    "1. 외부 입력 없이 그대로 실행되는 단일 완결 프로그램. import 금지.\n"
+    "   ★ input()을 절대 쓰지 마라 — 처리할 데이터(리스트·딕셔너리·숫자 등)는 코드 안에 값으로 직접 적는다 "
+    "(예: data = [10, 20, 30, 40, 50]). 사용자 입력을 받는 코드는 실격이다.\n"
+    "2. 함수는 정확히 1개만 정의하고, 그 함수 안에 반복문(for 또는 while)을 1개 이상 둔다.\n"
+    "3. ★ 반복문이 한 번 돌 때마다 진행 상황을 print로 출력한다(반복마다 값이 변하는 누적·카운트 변수를 함께 보여준다). "
+    "그래서 실행하면 여러 줄이 출력되고, 마지막에 최종 결과도 print한다 — 중간 출력과 최종 출력이 모두 존재해야 한다.\n"
+    "4. 길이 최대 20줄(권장 10~16줄). 변수·함수 이름은 의미가 드러나는 영문 snake_case(예: total_price, count_down). "
+    "한글 식별자 금지. 주석은 넣지 않는다(실행 추적 문항의 단서가 되지 않도록).\n"
+    "5. 아래 참고 예시가 있으면 구조·스타일만 본뜨고 그대로 복사하지 마라.\n"
+    "6. 출력은 JSON 객체 1개만: {\"python_code\": \"<실행 가능한 코드 전체>\"}. 코드펜스·설명 문장 금지."
 )
 
-SYSTEM_PROBLEM = (
-    "아래 파이썬 코드를 읽고 코드의 제목·한 줄 요약과 4지선다 MCQ 5문항을 한 번에 만든다.\n"
-    "출력은 지정한 JSON 객체 1개만(코드블록 기호·설명 문장 금지).\n"
-    "문항 난이도는 중학교 3학년~고등학교 1학년 수준으로 통일한다 "
-    "(주어진 코드만 읽으면 풀 수 있고, 고급 개념을 요구하지 않는다).\n\n"
-    "규칙:\n"
-    "1. title: 코드 전체를 가리키는 짧은 한국어 제목.\n"
-    "2. summary: 이 코드가 무엇을 하는지 한 줄로 요약한 한국어 문장.\n"
-    "3. 5문항의 ct_skill은 순서대로 분해, 패턴인식, 추상화, 알고리즘적사고, 통합. 각 정확히 1문항.\n"
-    "3-1. 유형마다 '묻는 각도'를 아래로 못박아 서로 겹치지 않게 한다. "
-    "특히 '이 함수의 역할/동작이 무엇인가' 같은 문항을 여러 유형에 중복 출제하지 마라(가장 흔한 중복 실수다):\n"
-    "   · 분해: 코드를 입력·처리·출력 등으로 나누면 몇 단계인지, 또는 어느 부분(몇 번째 줄·어느 함수)이 무슨 단계인지 — 구조 분할만 묻는다.\n"
-    "   · 패턴인식: 반복에서 값이 변하는 규칙이나 n번째 출력값 등 반복 패턴을 묻는다.\n"
-    "   · 추상화: 특정 변수·이름이 뜻하는 개념·의미가 무엇인지 묻는다(구체적 값·자료형 말고). 함수 전체의 역할은 묻지 마라.\n"
-    "   · 알고리즘적사고: 코드를 단계별로 실행했을 때의 최종 변수값·출력 등 실행 흐름 추적을 묻는다.\n"
-    "   · 통합: 코드 전체가 푸는 문제가 무엇인지, 또는 어떤 상황에 쓰는지(사용 맥락)·한 문장 요약을 묻는다.\n"
-    "   같은 코드 부분(예: 같은 함수)을 두 문항 이상에서 똑같은 각도로 묻지 말고, 각 유형은 위 각도만 사용한다.\n"
-    "4. 각 문항은 주어진 코드를 읽으면 풀 수 있어야 한다.\n"
-    "5. 각 문항 보기는 정확히 4개(A/B/C/D), 정답은 그 중 1개. 오답 보기도 그럴듯하게.\n"
-    "6. 정답 라벨이 한 자리에 쏠리지 않게 5문항에 걸쳐 다양하게 분포시킨다.\n"
-    "7. 각 문항에 answer_type을 분류해 넣는다:\n"
-    "   - 'computational': 코드를 실행하면 값이 하나로 정해지는 문항(출력값, n번 반복 후 변수값, 함수 반환값 등). 정답 보기는 그 값 자체.\n"
-    "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻는 문항. 정답 보기가 설명 문장이면 conceptual로 둔다(서술형 답을 computational로 분류하지 마라).\n"
-    "   강제는 아니지만 보통 알고리즘적사고(가끔 패턴인식)가 computational, 분해·추상화·통합은 conceptual이 자연스럽다.\n"
-    "8. 각 문항의 verification_snippet:\n"
-    "   - answer_type이 'computational'이면: 정답 값을 구하는 자족(self-contained) 파이썬 코드를 적는다. "
-    "필요한 함수 정의를 모두 그 안에 포함한다. ★ 마지막 줄은 반드시 print()로 정답 값 하나만 출력한다 "
-    "(함수를 호출만 하고 print를 빠뜨리면 안 됨: 'calc(...)' ✕ → 'print(calc(...))' ○). "
-    "그리고 그 print 출력값이 정답으로 표시한 보기(answer)의 값과 정확히 같아야 한다. "
-    "input()·파일·네트워크·무한루프 금지.\n"
-    "   - answer_type이 'conceptual'이면: 빈 문자열 \"\".\n"
-    "   - computational 문항의 보기 값(라벨 뒤 부분)에는 단위·접미사(번, 개, 원, 명, 회 등)나 "
-    "따옴표를 붙이지 말고, verification_snippet의 print 출력과 글자 그대로 정확히 같게 만든다. "
-    "예: 스니펫이 2를 출력하면 보기는 'B. 2번'이 아니라 'B. 2'.\n"
-    "9. 각 문항에 focus_points(1~3개의 한국어 문자열 배열)를 넣는다. "
-    "정답을 그대로 적지 말고 학생이 풀이를 떠올리는 '생각의 단서'(예: 살펴봐야 할 코드 영역, 추적할 변수, 호출 흐름)로 적는다.\n\n"
-    'JSON 형식:\n'
-    '{"title": "프로그램 제목",\n'
-    ' "summary": "이 프로그램이 하는 일 한 줄",\n'
-    ' "questions": [\n'
-    '  {"ct_skill": "분해", "question": "...", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], "answer": "B", "answer_type": "conceptual", "verification_snippet": "", "explanation": "정답 해설 1~2문장", "focus_points": ["살펴볼 단서 1", "살펴볼 단서 2"]},\n'
-    '  {"ct_skill": "패턴인식", ...},\n'
-    '  {"ct_skill": "추상화", ...},\n'
-    '  {"ct_skill": "알고리즘적사고", "...", "answer_type": "computational", "verification_snippet": "def calc(...):\\n    ...\\nprint(calc(...))", ...},\n'
-    '  {"ct_skill": "통합", ...}\n'
-    ']}'
-)
 
-# Stage 2 구조화 출력 강제용 JSON Schema (code_reading_generation.md §4).
-# bare json_object가 아니라 json_schema로 넘겨 필드·타입·배열 길이·완결성까지 디코더가 강제한다.
-# (ct_skill 값은 enum으로 제한하되, 순서·구성 분해→통합 각 1개 보정은 api._reconcile_skills가 담당.)
-PROBLEM_SET_SCHEMA = {
+# ── 코드 생성 구조화 출력 (python_code 1개) ─────────────────────────
+CODE_GEN_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"python_code": {"type": "string"}},
+    "required": ["python_code"],
+}
+CODE_GEN_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "code_gen", "strict": True, "schema": CODE_GEN_SCHEMA},
+}
+
+
+# ── 의사코드 생성 (python_code → 한글 의사코드 줄 배열) ──────────────
+SYSTEM_PSEUDOCODE = (
+    "너는 파이썬 코드를 '한글 의사코드'로 번역하는 도구다. 새 알고리즘을 만들지 말고, "
+    "주어진 코드와 의미가 똑같게 한 줄씩 번역한다.\n"
+    "출력: 각 원소가 의사코드 '한 단계(한 줄)'인 문자열 배열. 블록(반복·조건의 안쪽)은 앞 공백 2칸 들여쓰기로 표현한다.\n"
+    "컨벤션:\n"
+    "- 함수 정의 → '함수 <이름>(<매개변수>) 정의:'\n"
+    "- range 반복 → 'i를 <시작>부터 <끝>까지 반복:' / 목록 순회 → '<목록>의 각 원소 x에 대해 반복:'\n"
+    "- while → '<조건>인 동안 반복:'\n"
+    "- 조건 → '만약 <조건>이면:' / '아니면:'\n"
+    "- 대입·누적 → '<변수>를 <값>으로 둔다' / '<변수>에 <값>을 더한다'\n"
+    "- 반환 → '<값> 반환' / 출력 → '<값> 출력'\n\n"
+    "예시1 파이썬:\n"
+    "def sum_to(n):\n    total = 0\n    for i in range(1, n + 1):\n        total += i\n    return total\nprint(sum_to(5))\n"
+    "예시1 pseudocode_lines:\n"
+    '["함수 sum_to(n) 정의:", "  total을 0으로 둔다", "  i를 1부터 n까지 반복:", "    total에 i를 더한다", "  total 반환", "sum_to(5)의 결과를 출력"]\n\n'
+    "예시2 파이썬:\n"
+    "def count_even(nums):\n    count = 0\n    for x in nums:\n        if x % 2 == 0:\n            count += 1\n    return count\nprint(count_even([3, 8, 5, 12]))\n"
+    "예시2 pseudocode_lines:\n"
+    '["함수 count_even(nums) 정의:", "  count를 0으로 둔다", "  nums의 각 원소 x에 대해 반복:", "    만약 x가 짝수이면:", "      count에 1을 더한다", "  count 반환", "count_even([3, 8, 5, 12])의 결과를 출력"]\n\n'
+    "출력은 JSON 객체 1개만: {\"pseudocode_lines\": [\"...\", \"...\"]}. 설명·코드펜스 금지."
+)
+PSEUDOCODE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "title":      {"type": "string"},
-        "summary":    {"type": "string"},
-        # difficulty·code는 echo만 시키고 파싱에 안 써서 토큰 낭비·JSON 잘림(truncation)의 원인이라 스키마에서 뺀다.
-        "questions": {
-            "type": "array",
-            "minItems": 5,
-            "maxItems": 5,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "ct_skill":             {"type": "string",
-                                             "enum": ["분해", "패턴인식", "추상화", "알고리즘적사고", "통합"]},
-                    "question":             {"type": "string"},
-                    "options":              {"type": "array", "minItems": 4, "maxItems": 4,
-                                             "items": {"type": "string"},
-                                             "description": "보기 4개('A. ...' 형식). computational 문항은 "
-                                             "각 보기의 값 부분(라벨 뒤)에 단위·접미사(번/개/원/명/회 등)나 따옴표를 "
-                                             "붙이지 말고 verification_snippet의 print 출력과 글자 그대로 같게 한다 "
-                                             "(예: 2를 출력하면 'A. 2', 'A. 2번' 금지)."},
-                    "answer":               {"type": "string", "enum": ["A", "B", "C", "D"]},
-                    "answer_type":          {"type": "string",
-                                             "enum": ["computational", "conceptual"]},
-                    "verification_snippet": {"type": "string"},
-                    "explanation":          {"type": "string"},
-                    "focus_points":         {"type": "array", "minItems": 1, "maxItems": 3,
-                                             "items": {"type": "string"}},
-                },
-                "required": ["ct_skill", "question", "options", "answer", "answer_type",
-                             "verification_snippet", "explanation", "focus_points"],
-            },
-        },
+        "pseudocode_lines": {"type": "array", "minItems": 3, "items": {"type": "string"}},
     },
-    "required": ["title", "summary", "questions"],
+    "required": ["pseudocode_lines"],
+}
+PSEUDOCODE_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "pseudocode", "strict": True, "schema": PSEUDOCODE_SCHEMA},
 }
 
-PROBLEM_SET_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {"name": "problem_set", "strict": True, "schema": PROBLEM_SET_SCHEMA},
+
+# ── 유형 3·4·5 문항 생성 (경로 B — LLM + verification_snippet 실행 검증) ──
+# 공통: 4지선다. ct_skill·code_kind·answer_type은 서버가 슬롯별로 주입하므로 LLM은
+# stem·options(4)·answer_index·verification_snippet·explanation·focus_points만 만든다.
+_Q_JSON_TAIL = (
+    "\n출력은 JSON 객체 1개만: "
+    '{"stem": "...", "options": ["보기1", "보기2", "보기3", "보기4"], "answer_index": 0, '
+    '"verification_snippet": "...", "explanation": "정답 해설 1~2문장", "focus_points": ["단서1", "단서2"]}. '
+    "코드펜스·설명 문장 금지."
+)
+
+SYSTEM_Q_PATTERN = (
+    "주어진 파이썬 코드의 반복을 분석해 '패턴인식' 4지선다 1문항을 만든다.\n"
+    "코드의 반복 변수(예: i)와 반복마다 값이 변하는 누적/카운트 변수(예: total)를 찾는다.\n"
+    "발문(stem)은 '다음 코드에서 {반복변수}가 {대상값}일 때 {누적변수}의 값은?' 형태로, 반복 도중 한 시점을 고른다.\n"
+    "verification_snippet: 코드를 그 시점까지 실행해 그 누적변수 값 '하나만' print하는 자족 실행 코드"
+    "(필요한 정의 포함, import·input 금지).\n"
+    "options 4개: 정답 = 그 시점 누적변수 값, 오답 3개 = 대상값±1 시점 값·반복변수 값 자체·최종 누적값 등 "
+    "흔한 추적 실수. 네 보기는 서로 다르게.\n"
+    "정답 보기 문자열은 verification_snippet의 print 출력과 글자 그대로 정확히 같게 한다"
+    "(단위·접미사·따옴표 금지). answer_index는 정답 보기 위치(0~3)."
+    + _Q_JSON_TAIL
+)
+
+SYSTEM_Q_MIDOUT = (
+    "주어진 파이썬 코드는 실행하면 여러 줄을 출력한다. '코드 중간 출력' 4지선다 1문항을 만든다.\n"
+    "체크포인트를 정확히 하나 정한다(예: N번째 반복까지 출력된 내용, 값을 반환하기 직전까지의 출력).\n"
+    "발문(stem)에 그 체크포인트를 분명히 쓴다(예: '위 코드에서 3번째 반복까지 출력된 내용은?').\n"
+    "verification_snippet: 그 체크포인트까지의 stdout만 그대로 나오게 하는 자족 실행 코드"
+    "(코드를 체크포인트까지만 실행하거나 그 출력 줄들을 그대로 print). import·input 금지.\n"
+    "options 4개: 정답 = 체크포인트까지의 출력(여러 줄이면 줄바꿈 포함), 오답 3개 = 한 줄 누락/추가·"
+    "한 번 더/덜 반복·최종 전체 출력 등. 네 보기는 서로 다르게.\n"
+    "정답 보기는 verification_snippet 출력과 글자 그대로 일치. answer_index는 정답 위치(0~3)."
+    + _Q_JSON_TAIL
+)
+
+SYSTEM_Q_FINOUT = (
+    "주어진 파이썬 코드의 '최종 출력' 4지선다 1문항을 만든다.\n"
+    "발문(stem)은 고정: '위 코드를 실행하면 최종 출력은?'.\n"
+    "verification_snippet: 주어진 코드를 그대로(전체) 실행해 전체 stdout이 나오게 한다.\n"
+    "options 4개: 정답 = 코드 전체 실행 출력(여러 줄이면 줄바꿈 포함), 오답 3개 = 중간값을 최종으로 착각·"
+    "off-by-one·형식 차이(따옴표·콤마·소수점) 등. 네 보기는 서로 다르게.\n"
+    "정답 보기는 실행 출력과 글자 그대로 일치. answer_index는 정답 위치(0~3)."
+    + _Q_JSON_TAIL
+)
+
+SYSTEM_Q_BY_KIND = {
+    "pattern":      SYSTEM_Q_PATTERN,
+    "mid_output":   SYSTEM_Q_MIDOUT,
+    "final_output": SYSTEM_Q_FINOUT,
 }
 
-# 단일 문항 재생성용 스키마 — 세트의 문항 item 스키마를 그대로 재사용해 두 경로가
-# 절대 어긋나지 않게 한다. (ct_skill·question·options 4개·answer·answer_type·
-# verification_snippet·explanation·focus_points 전부 required, additionalProperties False.)
-SINGLE_PROBLEM_SCHEMA = PROBLEM_SET_SCHEMA["properties"]["questions"]["items"]
-
-SINGLE_PROBLEM_RESPONSE_FORMAT = {
+QGEN_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "stem":                 {"type": "string"},
+        "options":              {"type": "array", "minItems": 4, "maxItems": 4,
+                                 "items": {"type": "string"}},
+        "answer_index":         {"type": "integer", "minimum": 0, "maximum": 3},
+        "verification_snippet": {"type": "string"},
+        "explanation":          {"type": "string"},
+        "focus_points":         {"type": "array", "minItems": 1, "maxItems": 3,
+                                 "items": {"type": "string"}},
+    },
+    "required": ["stem", "options", "answer_index", "verification_snippet",
+                 "explanation", "focus_points"],
+}
+QGEN_RESPONSE_FORMAT = {
     "type": "json_schema",
-    "json_schema": {"name": "single_problem", "strict": True, "schema": SINGLE_PROBLEM_SCHEMA},
+    "json_schema": {"name": "typed_question", "strict": True, "schema": QGEN_SCHEMA},
 }
 
 
@@ -307,121 +322,46 @@ def _generate(messages: list, temperature: float, max_tokens: int = 4096,
 
 # ── 생성 계열 (TEMP_CREATIVE, history 없음) ────────────────────────
 
+
 def call_code_gen(topic: str = "", ctx: str = "", difficulty: str = "") -> str:
-    """Stage 1 — 단일 완결 파이썬 프로그램 생성 (code_reading_generation.md §2)."""
+    """코드 제시 자산 생성 — 단일 완결 파이썬 프로그램(함수 1개 + 내부 반복 + 진행 print).
+    json_schema로 {"python_code": ...}를 강제한다(api가 파싱). (code_presentation_revision §3)"""
     system = SYSTEM_CODE
     if ctx:
         system += f"\n\n[참고 예시]\n{ctx}"
-    # 사고는 _generate의 </think> 프리필로 일괄 차단된다(여기서 토큰 지시 불필요).
     user_content = f"난이도: {difficulty} / 주제 힌트: {topic}"
     return _generate(
         [{"role": "system", "content": system},
          {"role": "user",   "content": user_content}],
         TEMP_CREATIVE,
+        response_format=CODE_GEN_RESPONSE_FORMAT,
     )
 
 
-def call_problem_gen(code: str, templates: str = "", difficulty: str = "") -> str:
-    """Stage 2 — 한 번 호출로 MCQ 5문항 일괄 생성 (code_reading_generation.md §3)."""
-    system = SYSTEM_PROBLEM
-    if templates:
-        system += f"\n\n[유형별 출제 가이드]\n{templates}"
-    user_content = f"난이도: {difficulty}\n[파이썬 코드]\n{code}"
+def call_pseudocode_gen(python_code: str) -> str:
+    """검증된 python_code를 한글 의사코드 줄 배열로 번역. json_schema 강제(api가 파싱).
+    (code_presentation_revision §4 — 유형 1 문제분해의 입력)"""
     return _generate(
-        [{"role": "system", "content": system},
-         {"role": "user",   "content": user_content}],
-        TEMP_CREATIVE,
-        max_tokens=6144,   # 5문항+스니펫 JSON이 잘리지 않도록 여유 (truncation 방지)
-        response_format=PROBLEM_SET_RESPONSE_FORMAT,
-    )
-
-
-SYSTEM_SINGLE_PROBLEM = (
-    "주어진 파이썬 코드에 대해 지정된 CT 요소 한 가지에 맞는 4지선다 MCQ 1문항을 만든다.\n"
-    "출력은 JSON 객체 1개만 (코드블록 기호·설명 문장 금지).\n\n"
-    "규칙:\n"
-    "1. 보기 정확히 4개(A/B/C/D), 정답 1개. 오답도 그럴듯하게.\n"
-    "2. answer_type 분류:\n"
-    "   - 'computational': 정답 보기가 코드 실행으로 정해지는 값(숫자·문자열) 자체인 문항. verification_snippet은 필요한 함수 정의를 모두 그 안에 포함한 자족(self-contained) 실행 코드로, ★ 마지막 줄에서 반드시 print()로 정답 값 하나만 출력한다(함수 호출만 하고 print 빠뜨리지 마라: 'calc(...)' ✕ → 'print(calc(...))' ○). 그 출력값은 정답 보기(answer) 값과 정확히 같아야 한다. 위 코드의 함수를 쓰려면 그 정의를 스니펫 안에 다시 적어라. input()·파일·네트워크 금지.\n"
-    "   - 'conceptual': 코드의 의미·구조·역할·목적을 묻거나 정답 보기가 설명 문장인 문항. verification_snippet은 \"\". (서술형 답을 computational로 분류하지 마라.)\n"
-    "3. computational이면 보기 값(라벨 뒤)에 단위·접미사(번/개/원/명/회 등)나 따옴표를 붙이지 말고, verification_snippet의 print 출력과 글자 그대로 정확히 일치시킨다 (예: 5를 출력하면 'A. 5', 'A. 5회' 금지).\n"
-    "4. focus_points: 1~3개의 한국어 문자열 배열. 정답을 그대로 적지 말고 학생이 풀이를 떠올리는 '생각의 단서'로 적는다.\n\n"
-    'JSON 형식:\n'
-    '{"ct_skill": "지정된 CT 요소", "question": "...", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], '
-    '"answer": "B", "answer_type": "computational", "verification_snippet": "...", "explanation": "정답 해설 1~2문장", "focus_points": ["...", "..."]}'
-)
-
-
-def call_single_problem_gen(code: str, ct_skill: str, templates: str = "") -> str:
-    """단일 문항 재생성 (검증 실패한 computational 문항용)."""
-    system = SYSTEM_SINGLE_PROBLEM
-    if templates:
-        system += f"\n\n[유형별 출제 가이드]\n{templates}"
-    user_content = f"CT 요소: {ct_skill}\n[파이썬 코드]\n{code}"
-    return _generate(
-        [{"role": "system", "content": system},
-         {"role": "user",   "content": user_content}],
-        TEMP_CREATIVE,
-        max_tokens=2048,   # 단일 문항+스니펫이 잘리지 않도록 여유
-        response_format=SINGLE_PROBLEM_RESPONSE_FORMAT,
-    )
-
-
-# ── 비코드 분해 문항 생성 (intent-first, quiz_spec §4.B·§6) ──────────
-# 코드 없음. 정답 분할을 먼저 정하고 그에 맞는 실생활 상황을 작성한다.
-# 자동 검증 불가 → 구조 검증 + 사람 검수(verified=False). LLM이 문항 전체를 생성.
-SYSTEM_DECOMPOSITION = (
-    "너는 중·고생용 '분해(decomposition)' 비코드 문제의 '정답 분할'을 만드는 출제자다. 코드는 절대 쓰지 않는다.\n"
-    "분해 = 실생활 작업을 시간·논리 순서의 단계(하위 작업)로 나누는 것. "
-    "'왜 하는가(목적·의미)'는 넣지 마라(그건 통합). '작업을 어떻게 쪼개는가(구조 분할)'만.\n"
-    "★ [참고 코드]가 주어지면, 그 코드가 '하는 일'과 관련된 실생활 상황으로 만든다 "
-    "(예: 코드가 가격·할인을 계산하면 → 가게에서 물건값을 치르는 과정, 코드가 점수를 합산·등급화하면 → 시험 채점 과정). "
-    "단, 코드·변수명·함수명·파이썬 용어는 문제에 절대 드러내지 마라. 학생은 코드 없이 '상황'만 본다.\n"
-    "intent-first — 먼저 올바른 분할을 정하고, 그 분할에 맞는 상황을 쓴다:\n"
-    "1. steps: 작업을 나눈 '올바른 순서'의 단계 3~5개. 각 단계는 짧은 동작 구절(예: '재료 준비하기'). "
-    "시간/논리 순서대로, 서로 겹치지 않게. (보기·오답은 시스템이 이 steps로 만든다)\n"
-    "2. situation: 그 단계대로 흘러가는, 코드 소재와 관련된 실생활 상황 2~4문장. "
-    "단계 라벨을 그대로 베끼지 말고 자연스러운 이야기로 쓴다.\n"
-    "3. explanation: 그렇게 나눈 근거 1~2문장.\n"
-    "★ 너는 정답을 고르지 않는다. situation·steps·explanation만 출력하면 시스템이 정답·오답을 구성한다.\n"
-    '출력은 아래 JSON 객체 하나만(설명·코드펜스 금지):\n'
-    '{"situation": "실생활 상황 2~4문장", "steps": ["1단계 동작", "2단계 동작", "3단계 동작"], '
-    '"explanation": "이렇게 나눈 근거 1~2문장"}'
-)
-
-DECOMPOSITION_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "situation":   {"type": "string"},
-        "steps":       {"type": "array", "minItems": 3, "maxItems": 5,
-                        "items": {"type": "string"}},
-        "explanation": {"type": "string"},
-    },
-    "required": ["situation", "steps", "explanation"],
-}
-
-DECOMPOSITION_RESPONSE_FORMAT = {
-    "type": "json_schema",
-    "json_schema": {"name": "decomposition", "strict": True, "schema": DECOMPOSITION_SCHEMA},
-}
-
-
-def call_decomposition_gen(code: str = "", templates: str = "") -> str:
-    """비코드 분해 문항(상황+정답 단계)을 intent-first로 생성. JSON 문자열 반환.
-    code: 소재 참고용(코드가 다루는 일과 관련된 상황을 만들되 코드는 노출하지 않는다)."""
-    system = SYSTEM_DECOMPOSITION
-    if templates:
-        system += f"\n\n[출제 참고 가이드]\n{templates}"
-    user = "분해 비코드 문항을 JSON으로 출력하라."
-    if code:
-        user += ("\n\n[참고 코드 — 소재(주제)만 참고하고 문제에는 절대 노출하지 마라]\n" + code)
-    return _generate(
-        [{"role": "system", "content": system},
-         {"role": "user",   "content": user}],
+        [{"role": "system", "content": SYSTEM_PSEUDOCODE},
+         {"role": "user",   "content": f"[파이썬 코드]\n{python_code}"}],
         TEMP_CREATIVE,
         max_tokens=1536,
-        response_format=DECOMPOSITION_RESPONSE_FORMAT,
+        response_format=PSEUDOCODE_RESPONSE_FORMAT,
+    )
+
+
+def call_typed_question_gen(kind: str, python_code: str, templates: str = "") -> str:
+    """유형 3·4·5(패턴인식/중간출력/최종출력) 단일 문항 생성. json_schema 강제(생성·재생성 공용).
+    kind: 'pattern' | 'mid_output' | 'final_output'."""
+    system = SYSTEM_Q_BY_KIND[kind]
+    if templates:
+        system += f"\n\n[출제 참고 가이드]\n{templates}"
+    return _generate(
+        [{"role": "system", "content": system},
+         {"role": "user",   "content": f"[파이썬 코드]\n{python_code}"}],
+        TEMP_CREATIVE,
+        max_tokens=2048,
+        response_format=QGEN_RESPONSE_FORMAT,
     )
 
 
@@ -528,21 +468,6 @@ def build_chat_system(code_context: str = None, current_problem: str = None,
     return system
 
 
-# ct_skill별 '생각해볼 거리' 방향 + 예시. 예시는 존댓말·따옴표 없이 둔다(모델이 말투·따옴표를 그대로 베끼지 않도록).
-_HINT_DIRECTION_BY_SKILL = {
-    "분해":         "코드를 어떤 부분(함수·처리 단계)으로 나눠볼지 떠올리게 하라. "
-                    "예: 이 코드를 어떤 부분들로 나눠볼 수 있을까요?",
-    "패턴인식":     "반복되며 규칙적으로 일어나는 동작에 주목하게 하라. "
-                    "예: 여기서 반복되는 동작에는 어떤 규칙이 있을까요?",
-    "추상화":       "함수가 어떤 구체적 과정을 감추고 무엇을 대표하는지 떠올리게 하라. "
-                    "예: 이 함수는 복잡한 과정을 어떤 한 가지 일로 묶어 감추고 있을까요?",
-    "알고리즘적사고": "입력을 따라가며 변수·실행 흐름이 어떻게 바뀌는지 추적하게 하라. "
-                    "예: 이 입력을 넣으면 변수가 어떻게 바뀌는지 한 줄씩 따라가 볼까요?",
-    "통합":         "부분들이 합쳐져 전체가 무엇을 이루는지 생각하게 하라. "
-                    "예: 각 함수가 합쳐져 무엇을 만드는 것 같나요?",
-}
-
-
 def build_trigger_user_message(trigger_type: str, ct_skill: str = None) -> str:
     """챗봇이 먼저 말하도록 만드는 유사-유저 메시지. 학생 발화로 기록하지 않는다."""
     if trigger_type == "hint":
@@ -550,11 +475,10 @@ def build_trigger_user_message(trigger_type: str, ct_skill: str = None) -> str:
             "[학생 행동: 힌트 버튼 클릭]\n"
             "학생이 현재 문제에 대한 힌트를 요청했다.\n"
         )
-        direction = _HINT_DIRECTION_BY_SKILL.get(ct_skill or "")
-        if direction:
-            msg += f"이 문항의 컴퓨팅 사고력 요소는 '{ct_skill}'이다. {direction}\n"
+        if ct_skill:
+            msg += f"이 문항의 컴퓨팅 사고력 요소는 '{ct_skill}'이다.\n"
         msg += (
-            "정답·정답 라벨을 절대 말하지 말고, 위 방향에 맞는 생각해볼 거리를 "
+            "정답·정답 라벨을 절대 말하지 말고, 이 요소에 맞는 생각해볼 거리를 "
             "소크라테스식 유도 질문 한 개로만 던져라. 2~3문장 이내. "
             "정중한 존댓말(해요체, ~까요?/~요)로 쓰고, 답변을 따옴표로 감싸지 마라. "
             "예시 문장을 그대로 베끼지 말고 지금 코드·문제에 맞게 새로 만들어라."

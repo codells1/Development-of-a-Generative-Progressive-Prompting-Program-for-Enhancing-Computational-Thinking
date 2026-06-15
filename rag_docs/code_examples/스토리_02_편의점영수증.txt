@@ -1,0 +1,12 @@
+# 주제: 편의점 합계·할인 / 난이도: 중3~고1 / 개념: 반복 누적+조건 할인 / 반복: for(인덱스) / 조건: 있음
+def total_with_discount(cart):
+    total = 0
+    for i in range(len(cart)):
+        total += cart[i]["price"] * cart[i]["qty"]
+    if total >= 10000:
+        total = int(total * 0.95)
+    return total
+
+cart = [{"name": "도시락", "price": 4500, "qty": 2},
+        {"name": "음료", "price": 1500, "qty": 1}]
+print(f"받을 돈: {total_with_discount(cart)}원")

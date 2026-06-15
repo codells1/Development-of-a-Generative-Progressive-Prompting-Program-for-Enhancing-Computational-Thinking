@@ -30,6 +30,20 @@
         </div>
     </div>
 
+    <!-- 유형 2(순서도): 보기를 클릭하면 이 창에 순서도를 크게 보여준다 -->
+    <div id="diagram-overlay" class="hidden">
+        <div class="diagram-modal">
+            <div class="diagram-modal-header">
+                <span id="diagram-modal-title">보기</span>
+                <button class="diagram-close" onclick="closeDiagramModal()">✕</button>
+            </div>
+            <div id="diagram-modal-body" class="diagram-modal-body"></div>
+            <div class="diagram-modal-footer">
+                <button id="diagram-select-btn" onclick="selectFromModal()">이 순서도를 정답으로 선택</button>
+            </div>
+        </div>
+    </div>
+
     <div class="grid">
 
         <div class="quadrant code-panel">
@@ -71,6 +85,13 @@
         </div>
 
     </div>
+    <!-- 유형 2(순서도) 보기 렌더용 Mermaid (CDN). 오프라인이면 보기는 원본 텍스트로 폴백된다. -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+        if (window.mermaid) {
+            mermaid.initialize({ startOnLoad: false, theme: "default", flowchart: { useMaxWidth: true } });
+        }
+    </script>
     <script src="{{ url_for('static', filename='main.js') }}"></script>
 </body>
 </html>

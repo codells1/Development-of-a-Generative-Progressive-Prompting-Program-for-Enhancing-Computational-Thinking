@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
-"""RAG 검색 type 필터(quiz_spec §7) 단위 테스트.
+"""RAG 검색 type 필터 단위 테스트 (question_generation_revision §8).
 
 실행:  python tests/test_retrieval_filter.py
-검증: 각 CT 유형이 자기 코퍼스(ct_{유형}.txt)에만 filter를 걸어 retrieve하는지(섞임 방지).
+검증:
+  - problem_templates RAG는 'template' 파일이 지정된 슬롯(유형 3·4·5)에서만 호출되고,
+    그 슬롯의 source_file로 filter가 걸린다(섞임 방지).
+  - 유형 1(order, template 없음)은 RAG를 호출하지 않고 "" 를 돌려준다.
 LM Studio 불필요 — rag_store.retrieve를 가로채 호출 인자만 확인한다.
 """
 import os
@@ -12,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import api  # noqa: E402
 
 
-def test_retrieve_templates_filters_per_skill():
+def test_retrieve_template_for_uses_slot_filter():
     calls = []
 
     def fake_retrieve(collection, query, k=5, filter=None):
@@ -22,16 +25,38 @@ def test_retrieve_templates_filters_per_skill():
     orig = api.rag_store.retrieve
     api.rag_store.retrieve = fake_retrieve
     try:
-        api._retrieve_templates("print('hello')")
+        with_tpl = [s for s in api.PROBLEM_SLOTS if s.get("template")]
+        assert with_tpl, "template 지정 슬롯이 있어야 한다"
+        for slot in with_tpl:
+            calls.clear()
+            out = api._retrieve_template_for(slot, "print('hello')")
+            assert len(calls) == 1, calls
+            c = calls[0]
+            assert c["collection"] == "problem_templates"
+            assert c["filter"] == {"source_file": slot["template"]}, (slot, c["filter"])
+            assert slot["ct_skill"] in c["query"]
+            assert out  # 가이드 문자열 반환
     finally:
         api.rag_store.retrieve = orig
 
-    # 5유형 각각 자기 파일로 필터링
-    assert len(calls) == len(api.PROBLEM_CT_SKILLS), calls
-    for c, skill in zip(calls, api.PROBLEM_CT_SKILLS):
-        assert c["collection"] == "problem_templates"
-        assert c["filter"] == {"source_file": f"ct_{skill}.txt"}, (skill, c["filter"])
-        assert skill in c["query"]
+
+def test_retrieve_template_for_skips_when_no_template():
+    calls = []
+
+    def fake_retrieve(collection, query, k=5, filter=None):
+        calls.append(1)
+        return "X"
+
+    orig = api.rag_store.retrieve
+    api.rag_store.retrieve = fake_retrieve
+    try:
+        no_tpl = [s for s in api.PROBLEM_SLOTS if not s.get("template")]
+        assert no_tpl, "template 없는 슬롯(유형1 등)이 있어야 한다"
+        for slot in no_tpl:
+            assert api._retrieve_template_for(slot, "print('x')") == ""
+        assert calls == [], "template 없는 슬롯은 RAG를 호출하면 안 된다"
+    finally:
+        api.rag_store.retrieve = orig
 
 
 def test_retrieve_signature_has_filter():

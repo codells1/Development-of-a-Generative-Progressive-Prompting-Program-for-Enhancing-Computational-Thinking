@@ -146,7 +146,11 @@ pre {
     padding: 10px 14px;
     background: #f7f8fb;
     border-top: 1px solid #e3e6ed;
-    flex-shrink: 0;
+    /* 보기가 길어도(순서도 2×2 등) 문제 패널을 넘지 않게 — 내부에서 스크롤한다.
+       그래야 제출 버튼·피드백이 항상 패널 안에 보인다(잘리지 않음). */
+    flex-shrink: 1;
+    min-height: 0;
+    max-height: 64%;
 }
 
 .answer-area.visible {
@@ -549,6 +553,10 @@ pre {
     flex-direction: column;
     gap: 6px;
     margin-bottom: 8px;
+    /* 보기 영역만 스크롤 → 아래 제출 버튼·피드백은 고정되어 항상 보인다. */
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .option-btn {
@@ -563,6 +571,113 @@ pre {
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s;
     width: 100%;
+    /* 코드 출력형 보기(여러 줄·공백)는 그대로 보이도록 */
+    white-space: pre-wrap;
+}
+
+/* ── 유형 2: 순서도 보기 — 압축 버튼(클릭 시 별도 창에서 크게) ── */
+.option-diagram-pick {
+    font-weight: 600;
+}
+.option-diagram-pick::after {
+    content: " 🔍";
+    opacity: 0.6;
+}
+
+/* 순서도 모달 (보기 클릭 시 열림) */
+#diagram-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1100;
+}
+#diagram-overlay.hidden {
+    display: none;
+}
+.diagram-modal {
+    background: #ffffff;
+    border-radius: 14px;
+    width: min(760px, 92vw);
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 44px rgba(0,0,0,0.25);
+    overflow: hidden;
+}
+.diagram-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    background: #f7f8fb;
+    border-bottom: 1px solid #e3e6ed;
+    font-weight: 700;
+    color: #2d3748;
+}
+.diagram-close {
+    background: transparent;
+    color: #718096;
+    font-size: 18px;
+    line-height: 1;
+    padding: 4px 8px;
+}
+.diagram-close:hover { background: #edf0fb; }
+.diagram-modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 18px;
+    display: flex;
+    justify-content: center;
+}
+.diagram-box-modal {
+    width: 100%;
+    text-align: center;
+}
+.diagram-box-modal svg {
+    max-width: 100%;
+    height: auto;
+}
+.diagram-modal-footer {
+    padding: 12px 18px;
+    border-top: 1px solid #e3e6ed;
+    display: flex;
+    justify-content: flex-end;
+    background: #fafbfc;
+}
+.diagram-fallback {
+    font-size: 13px;
+    white-space: pre-wrap;
+    text-align: left;
+    margin: 0;
+}
+
+/* ── 유형 1: 의사코드 단계 블록(섞인 순서) ── */
+.pseudo-blocks {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.pseudo-block {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    background: #f7f8fb;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+.blk-label {
+    font-weight: 700;
+    color: #4f6ef7;
+    flex: 0 0 auto;
+}
+.blk-lines {
+    white-space: pre-wrap;
+    font-family: inherit;
 }
 
 .option-btn:hover:not(:disabled) {
@@ -598,6 +713,7 @@ pre {
 .answer-submit-row {
     display: flex;
     justify-content: flex-end;
+    flex-shrink: 0;   /* 보기 스크롤과 무관하게 항상 패널 하단에 고정·노출 */
 }
 
 #answer-submit-row.hidden {
@@ -646,6 +762,7 @@ pre {
     gap: 6px;
     border-top: 1px solid #e3e6ed;
     padding-top: 8px;
+    flex-shrink: 0;   /* 보기 스크롤과 무관하게 항상 보이도록 고정 */
 }
 
 #feedback-area.hidden {
@@ -688,5 +805,45 @@ pre {
 /* 오답 시 '다음 문제'를 숨겨 정답 전까지 못 넘어가게 한다 */
 #next-problem-btn.hidden {
     display: none;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   반응형 — 좁은 화면에서는 4분할 고정(100vh) 대신 세로로 쌓고 페이지 스크롤 허용
+   ══════════════════════════════════════════════════════════════ */
+
+/* 데스크톱이라도 세로가 짧으면(예: 노트북) 보기 영역이 잘리지 않게 상한을 키워 내부 스크롤에 맡긴다 */
+@media (min-width: 1025px) and (max-height: 720px) {
+    .answer-area { max-height: 72%; }
+}
+
+/* 태블릿·모바일: 단일 열로 쌓고, 각 패널은 최소 높이 확보 + 페이지 스크롤 */
+@media (max-width: 1024px) {
+    body {
+        height: auto;
+        min-height: 100vh;
+        overflow-y: auto;
+    }
+    .grid {
+        grid-template-columns: 1fr;
+        grid-template-rows: none;
+        grid-auto-rows: minmax(300px, auto);
+        height: auto;
+        min-height: 100vh;
+    }
+    .code-panel { grid-row: auto; min-height: 320px; }
+    .chat-panel { min-height: 340px; }
+    .problem-panel { min-height: 360px; }
+    /* 세로 스택에서는 패널이 콘텐츠만큼 커지므로 보기 영역 상한을 풀고 페이지 스크롤에 맡긴다 */
+    .answer-area { max-height: none; }
+}
+
+/* 모바일: 순서도 보기 1열, 폰트·여백 축소 */
+@media (max-width: 600px) {
+    .grid { gap: 6px; padding: 6px; }
+    .options-list.diagram-grid { grid-template-columns: 1fr; }
+    pre { font-size: 14px; padding: 12px; }
+    .text-display { padding: 14px 12px; font-size: 14px; }
+    .quadrant-header { padding: 8px 12px; }
+    .chat-input-area { flex-wrap: wrap; }
 }
 

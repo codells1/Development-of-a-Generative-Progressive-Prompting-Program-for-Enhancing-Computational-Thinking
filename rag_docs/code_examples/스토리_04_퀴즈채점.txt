@@ -1,0 +1,11 @@
+# 주제: 퀴즈 채점 / 난이도: 중3~고1 / 개념: 반복+조건 카운트 / 반복: for(인덱스) / 조건: 있음
+def grade_quiz(answer_key, my_answers):
+    correct = 0
+    for i in range(len(answer_key)):
+        if my_answers[i] == answer_key[i]:
+            correct += 1
+    return correct
+
+answer_key = ["B", "A", "C", "D", "A"]
+my_answers = ["B", "A", "B", "D", "A"]
+print(f"맞은 개수: {grade_quiz(answer_key, my_answers)}")

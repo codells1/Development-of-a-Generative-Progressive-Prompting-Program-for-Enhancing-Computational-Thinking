@@ -1,0 +1,13 @@
+# 주제: 도서 대출 현황 / 난이도: 중3~고1 / 개념: 반복+조건 카운트 / 반복: for(인덱스) / 조건: 있음
+def count_available(library):
+    available = 0
+    for i in range(len(library)):
+        if library[i]["stock"] > 0:
+            available += 1
+    return available
+
+library = [{"title": "파이썬 입문", "stock": 3},
+           {"title": "알고리즘 기초", "stock": 0},
+           {"title": "자료구조", "stock": 1},
+           {"title": "운영체제", "stock": 0}]
+print(f"대출 가능: {count_available(library)}종")

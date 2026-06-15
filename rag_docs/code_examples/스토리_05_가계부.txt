@@ -1,0 +1,14 @@
+# 주제: 가계부 잔액 / 난이도: 고1~고2 / 개념: 반복+조건 누적 / 반복: for(인덱스) / 조건: 있음(if/else)
+def balance(records):
+    total = 0
+    for i in range(len(records)):
+        if records[i]["type"] == "수입":
+            total += records[i]["amount"]
+        else:
+            total -= records[i]["amount"]
+    return total
+
+records = [{"type": "수입", "amount": 50000},
+           {"type": "지출", "amount": 12000},
+           {"type": "지출", "amount": 8000}]
+print(f"잔액: {balance(records)}원")
