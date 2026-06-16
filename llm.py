@@ -52,24 +52,66 @@ def _with_lang_guard(messages: list) -> list:
     return [{"role": "system", "content": _LANG_GUARD.strip()}, *messages]
 
 
+def _ensure_user_turn(messages: list) -> list:
+    """모델 채팅 템플릿(Qwen 등)은 user 메시지가 하나도 없으면 렌더링을 거부한다
+    (jinja: 'No user query found in messages'). </think> 프리필은 끝에 assistant 메시지를
+    덧붙이므로, 앞에 user 발화가 비어 있으면 [system, assistant]만 남아 이 오류가 난다.
+    트리거 불일치·빈 히스토리 등으로 user 발화가 빌 때를 위한 방어선."""
+    if any(m.get("role") == "user" for m in messages):
+        return messages
+    return [*messages, {"role": "user", "content": "이 문제 힌트를 부탁해요."}]
+
+
 # ── System Prompts ──────────────────────────────────────────────────
 
 SYSTEM_CHAT = (
     "당신은 컴퓨팅 사고력(CT) 학습을 돕는 소크라테스식 교육 AI다.\n"
     "학생이 스스로 답을 발견하도록 유도 질문으로만 대화한다.\n\n"
-    "말투·형식 (반드시 일관 유지):\n"
-    "- 항상 정중한 존댓말(해요체)로 답한다. 문장 끝은 ~요 / ~까요 / ~네요 형태로 맺는다. "
-    "반말(~까?, ~같아?, ~거야 등)은 절대 쓰지 않는다.\n"
+
+    "[힌트 원리 — Block Model 상향식]\n"
+    "모든 힌트는 아래 4단계 사다리를 '가장 낮은 단부터' 같은 순서로 오른다. "
+    "유형이 달라도 사다리는 동일하고, 각 단의 '내용'만 유형에 맞게 달라진다.\n"
+    "  Atom(원자)     : 가장 작은 단위(한 줄·한 요소)의 의미\n"
+    "  Block(묶음)    : 함께 동작하는 묶음이 하는 일\n"
+    "  Relation(관계) : 묶음과 묶음 사이의 연결·흐름\n"
+    "  Macro(전체)    : 그 묶음들이 이루는 전체\n"
+    "원칙: 학생이 막힌 가장 낮은 단(Atom)부터 시작한다. 그 단을 이해하면 한 단만 위로 올린다. "
+    "단을 건너뛰지 않는다. 정답·정답 코드·출력값을 직접 노출하지 말고 학생이 스스로 도달하게 유도한다.\n\n"
+
+    "[유형별 4단계 내용]\n"
+    "현재 문항의 유형은 [이 문항이 기르려는 컴퓨팅 사고력 요소]로, 보는 코드 종류는 [이 문항이 보는 코드 종류]로 판별한다.\n"
+    "· 문제분해 (의사코드 · 단계 순서)\n"
+    "  Atom=의사코드 한 줄(단계)이 하는 일 / Block=이어지는 단계들이 이루는 묶음(준비·처리·마무리) / "
+    "Relation=단계 간 순서·의존(앞 단계가 뒤 단계의 무엇을 준비하나) / Macro=전체 절차의 흐름\n"
+    "· 추상화/알고리즘 (의사코드 · 순서도/제어흐름)\n"
+    "  Atom=한 단계의 동작(대입·조건·반복) / Block=단계들이 이루는 제어구조(순차·선택·반복) / "
+    "Relation=제어구조들의 연결(순서도 모양) / Macro=이 알고리즘이 핵심적으로 계산·결정하는 것\n"
+    "· 패턴인식 (파이썬 · 규칙 찾기)\n"
+    "  Atom=반복 1회에 바뀌는 값 한 개 / Block=반복이 쌓아 만드는 묶음(수열·누적) / "
+    "Relation=그 변화가 반복·재등장하는 지점 / Macro=일반 규칙(공식·점화식)\n"
+    "· 코드(중간 출력) · 코드(최종 출력) (파이썬 · 출력 추적)\n"
+    "  Atom=한 줄 실행 시 변수 변화 / Block=반복 1회·한 묶음 종료 시점의 상태 / "
+    "Relation=묶음을 거치며 이어지는 값의 흐름 / Macro=목표 시점의 출력값(중간 또는 최종)\n"
+    "  ※ 여기서 Macro는 '실행 결과'의 전체이지 코드의 '목적'이 아니다.\n\n"
+
+    "[진행]\n"
+    "1. 현재 문항의 유형과 보는 코드 종류(의사코드/파이썬)를 먼저 확인한다.\n"
+    "2. 학생 질문을 보고 그 유형의 어느 단(Atom~Macro)에서 막혔는지 판단한다.\n"
+    "3. 그 단에 맞는 유도 질문 하나로 이끈다.\n"
+    "4. 학생이 스스로 설명하면 다음 단으로 올리고, 막히면 같은 단을 더 잘게 쪼개 다시 묻는다.\n\n"
+
+    "[말투·형식 — 반드시 일관 유지]\n"
+    "- 항상 정중한 존댓말(해요체). 문장 끝은 ~요 / ~까요 / ~네요. 반말(~까?, ~같아?, ~거야 등) 금지.\n"
     "- 답변 전체를 큰따옴표(\")나 작은따옴표(')로 감싸지 않는다. "
-    "코드의 변수·함수명 같은 짧은 식별자를 가리킬 때를 빼고는 따옴표를 쓰지 말고, 문장만 그대로 출력한다.\n"
-    "- 중학생도 이해할 수 있는 쉬운 말로, 2~3문장 이내로 짧게.\n\n"
-    "절대 금지:\n"
-    "- 정답, 정답 코드, 정답 값을 직접 알려주지 않는다.\n"
-    "- 정답은 ~입니다 / A번이 맞습니다 같은 직접 답변 금지.\n\n"
-    "반드시 지킬 사항:\n"
-    "- 모든 답변은 질문으로 끝낸다 (예: 그렇다면 x가 1일 때 어떻게 될까요?).\n"
-    "- 코드의 어느 부분을 보면 힌트가 되는지 방향만 제시한다.\n"
-    "- 학생 질문이 모호하면 어느 부분을 묻는지 되묻는다."
+    "코드의 변수·함수명 같은 짧은 식별자를 가리킬 때만 따옴표를 쓰고, 그 밖에는 문장만 그대로 출력한다.\n"
+    "- 중학생도 이해할 수 있는 쉬운 말로, 2~3문장 이내로 짧게.\n"
+    "- 모든 답변은 유도 질문 하나로 끝낸다 (예: 그렇다면 x가 1일 때 이 줄은 어떻게 될까요?).\n"
+    "- 학생 질문이 모호하면 어느 부분을 묻는지 되묻는다.\n\n"
+
+    "[절대 금지]\n"
+    "- 정답, 정답 코드, 정답 값(출력값)을 직접 알려주지 않는다. '정답은 ~입니다 / A번이 맞습니다' 금지.\n"
+    "- 단을 건너뛰어 곧바로 Macro(전체·결과)를 말해버리지 않는다.\n"
+    "- '통합·융합' 같은 용어를 새로 끌어들이지 않는다."
 )
 
 SYSTEM_CODE = (
@@ -308,7 +350,7 @@ def _generate(messages: list, temperature: float, max_tokens: int = 4096,
     """모든 비스트리밍 LLM 호출의 단일 진입점. Lock으로 동시 호출을 직렬화한다."""
     kwargs = dict(
         model=MODEL,
-        messages=_skip_think(_with_lang_guard(messages)),
+        messages=_skip_think(_ensure_user_turn(_with_lang_guard(messages))),
         temperature=temperature,
         max_tokens=max_tokens,
         stream=False,
@@ -362,6 +404,47 @@ def call_typed_question_gen(kind: str, python_code: str, templates: str = "") ->
         TEMP_CREATIVE,
         max_tokens=2048,
         response_format=QGEN_RESPONSE_FORMAT,
+    )
+
+
+# ── 해설 교정 (확정 정답에 맞춰 해설 재작성) ────────────────────────
+# 유형 3·4·5는 정답을 snippet 실행값으로 '확정'하지만, 해설은 LLM이 확정 전에 써서
+# 정답과 어긋날 수 있다. 불일치가 감지되면 '확정 정답'을 근거로 해설만 다시 쓴다.
+SYSTEM_EXPLAIN_FIX = (
+    "너는 객관식 코드 문항의 '정답 해설'을 쓰는 도구다. 정답은 이미 코드의 실제 실행으로 확정돼 있다.\n"
+    "[확정 정답]이 왜 정답인지 학생에게 1~2문장으로 짧고 정중하게(해요체/입니다체) 설명한다.\n"
+    "규칙:\n"
+    "1. 반드시 [확정 정답]과 일치하게 설명한다. 다른 값을 정답이라고 말하지 마라.\n"
+    "2. 해설에 결과 수치를 쓸 때는 [확정 정답]의 값과 글자 그대로 똑같이 쓴다 — 다른 숫자를 결론으로 내지 마라.\n"
+    "3. 코드의 동작(반복·누적·출력 순서 등)에 근거해 설명하되, 풀이 과정을 장황히 늘어놓지 않는다.\n"
+    "출력은 JSON 객체 1개만: {\"explanation\": \"...\"}. 코드펜스·설명 문장 금지."
+)
+EXPLAIN_FIX_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"explanation": {"type": "string"}},
+    "required": ["explanation"],
+}
+EXPLAIN_FIX_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "explanation_fix", "strict": True, "schema": EXPLAIN_FIX_SCHEMA},
+}
+
+
+def call_explanation_fix(python_code: str, stem: str, correct_answer: str) -> str:
+    """확정 정답에 맞춰 해설을 재작성. json_schema로 {"explanation": ...} 강제(api가 파싱).
+    분석 계열 온도(TEMP_PRECISE)로 정답 충실도를 높인다."""
+    user = (
+        f"[파이썬 코드]\n{python_code}\n\n"
+        f"[문제]\n{stem}\n\n"
+        f"[확정 정답]\n{correct_answer}"
+    )
+    return _generate(
+        [{"role": "system", "content": SYSTEM_EXPLAIN_FIX},
+         {"role": "user",   "content": user}],
+        TEMP_PRECISE,
+        max_tokens=400,
+        response_format=EXPLAIN_FIX_RESPONSE_FORMAT,
     )
 
 
@@ -445,12 +528,19 @@ def call_hint_followup(code: str, current_problem: str, answer: str, explanation
 # ── 챗봇 (스트리밍, Lock 미적용) ────────────────────────────────────
 
 def build_chat_system(code_context: str = None, current_problem: str = None,
-                      ct_skill: str = None, focus_points=None) -> str:
+                      ct_skill: str = None, focus_points=None, code_kind: str = None) -> str:
     system = SYSTEM_CHAT
     if code_context:
         system += f"\n\n[현재 학습 중인 코드]\n{code_context}"
     if current_problem:
         system += f"\n\n[현재 풀고 있는 문제]\n{current_problem}"
+    if code_kind:
+        kind_label = {"pseudocode": "의사코드", "python": "파이썬"}.get(code_kind, code_kind)
+        system += (
+            f"\n\n[이 문항이 보는 코드 종류] {kind_label}\n"
+            "힌트는 이 코드 종류에 근거해 준다. 의사코드 문항이면 파이썬 문법이 아니라 "
+            "단계(줄)의 의미로, 파이썬 문항이면 실제 실행되는 코드 줄로 단서를 잡아라."
+        )
     if ct_skill:
         system += (
             f"\n\n[이 문항이 기르려는 컴퓨팅 사고력 요소] {ct_skill}\n"
@@ -478,8 +568,9 @@ def build_trigger_user_message(trigger_type: str, ct_skill: str = None) -> str:
         if ct_skill:
             msg += f"이 문항의 컴퓨팅 사고력 요소는 '{ct_skill}'이다.\n"
         msg += (
-            "정답·정답 라벨을 절대 말하지 말고, 이 요소에 맞는 생각해볼 거리를 "
-            "소크라테스식 유도 질문 한 개로만 던져라. 2~3문장 이내. "
+            "학생이 아직 아무 말도 하지 않았으니, Block Model 사다리의 가장 낮은 단(Atom: "
+            "한 줄·한 요소의 의미)에서 시작하라. 정답·정답 라벨을 절대 말하지 말고, 이 요소의 "
+            "Atom 단에 맞는 생각해볼 거리를 소크라테스식 유도 질문 한 개로만 던져라. 2~3문장 이내. "
             "정중한 존댓말(해요체, ~까요?/~요)로 쓰고, 답변을 따옴표로 감싸지 마라. "
             "예시 문장을 그대로 베끼지 말고 지금 코드·문제에 맞게 새로 만들어라."
         )
@@ -499,7 +590,7 @@ def stream_chatbot(messages: list):
     """챗봇 SSE 스트리밍. Lock 미적용 — 스트리밍 중 Lock 점유로 다른 호출 차단 방지."""
     return _client.chat.completions.create(
         model=MODEL,
-        messages=_skip_think(_with_lang_guard(messages)),
+        messages=_skip_think(_ensure_user_turn(_with_lang_guard(messages))),
         max_tokens=4096,
         temperature=TEMP_CREATIVE,
         stream=True,

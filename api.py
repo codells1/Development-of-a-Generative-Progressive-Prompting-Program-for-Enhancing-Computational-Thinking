@@ -489,6 +489,75 @@ def _ensure_distinct(options: list, answer_index: int) -> list:
     return options
 
 
+# ── 해설 ↔ 정답 일관성 검사·교정 ───────────────────────────────────
+# 유형 3·4·5는 정답을 snippet 실행값(actual)으로 확정하지만, 해설은 LLM이 확정 '전에'
+# 자기 머릿속 답 기준으로 써서, 정답은 맞는데 해설이 다른 값을 결론처럼 말하는 모순이
+# 생긴다. 아래로 그 모순을 코드로 잡아내고(_explanation_consistent_with_answer),
+# 잡히면 확정 정답을 근거로 해설을 다시 쓴다(_reconcile_explanation).
+_EXP_NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*")
+# '정답/답/결과/최종 출력 … X' 단정 추출 (비숫자 정답의 모순 단정 감지용)
+_CLAIM_RE = re.compile(
+    r"(?:정답|답|결과|최종\s*출력)\s*(?:은|는|이|가)?\s*[:：]?\s*[\"']?([^\n\"'.,!?]{1,40})"
+)
+
+
+def _explanation_consistent_with_answer(explanation: str, answer_value: str) -> bool:
+    """해설이 확정 정답값과 모순되지 않는지(해설이 '이상한 소리'를 하지 않는지) 검사.
+
+    LLM 비의존 순수 함수 — 단독 검증 가능. 판정이 애매하면 일관(True)으로 본다
+    (멀쩡한 해설을 오탐으로 버려 불필요한 재작성을 유발하지 않기 위해).
+    규칙(정밀도 우선):
+    - 정답이 '순수 숫자 한 개'면: 해설에 숫자가 있는데 정답 숫자가 하나도 안 나오면 모순.
+      (해설이 정답과 무관한 다른 수치를 결론으로 말하는 전형적 케이스 — 사용자가 본 그 버그.)
+    - 그 밖(여러 줄 출력 등)이고 정답이 한 줄이면: 해설이 '정답은/답은/결과는 X' 꼴로
+      정답과 다른 값을 단정하고, 정답 문자열이 해설 어디에도 없으면 모순.
+    """
+    exp = (explanation or "").strip()
+    ans = (answer_value or "").strip()
+    if not exp or not ans:
+        return True   # 근거 부족 → 통과
+
+    ans_compact = ans.replace(",", "").replace(" ", "")
+    if _CLEAN_NUM_RE.fullmatch(ans_compact):           # 정답이 순수 숫자 한 개
+        ans_num = _to_number(ans)
+        nums = [n for n in (_to_number(t) for t in _EXP_NUM_RE.findall(exp)) if n is not None]
+        if nums and ans_num is not None and all(n != ans_num for n in nums):
+            return False
+        return True
+
+    if "\n" not in ans:                                # 비숫자 한 줄 정답
+        for m in _CLAIM_RE.finditer(exp):
+            claimed = m.group(1).strip()
+            if claimed and not _values_match(claimed, ans) and ans not in exp:
+                return False
+    return True
+
+
+def _fallback_explanation(answer_value: str) -> str:
+    """LLM 재작성마저 실패할 때 쓰는, 정답과 모순될 수 없는 결정적 해설."""
+    ans = (answer_value or "").strip()
+    if ans and "\n" not in ans and len(ans) <= 40:
+        return f"코드를 실제로 실행해 확인하면 정답은 {ans}입니다."
+    return "코드를 한 줄씩 실제로 실행했을 때 출력되는 결과가 정답입니다."
+
+
+def _reconcile_explanation(python_code: str, stem: str, answer_value: str) -> str:
+    """해설↔정답 불일치 시 해설을 확정 정답 기준으로 교정한다.
+    1차: LLM에 확정 정답을 주고 재작성 → 일관성 재검사를 통과할 때만 채택.
+    실패하거나 여전히 불일치면: 결정적 안전 해설(_fallback_explanation)."""
+    try:
+        raw = llm.call_explanation_fix(python_code, stem, answer_value)
+        new_exp = (json.loads(_slice_first_json(raw), strict=False)
+                   .get("explanation") or "").strip()
+        if (new_exp and not _has_cjk(new_exp)
+                and _explanation_consistent_with_answer(new_exp, answer_value)):
+            return new_exp
+        print("[explain-fix] 재작성 결과도 불일치/손상 → 결정적 해설")
+    except Exception as e:
+        print(f"[explain-fix] 재작성 실패 — {e}")
+    return _fallback_explanation(answer_value)
+
+
 def _deterministic_fallback(slot: dict, python_code: str) -> dict | None:
     """LLM이 끝내 실패하면 코드 실행 결과로 문항을 결정적으로 만든다(5문항 보장용)."""
     actual = _run_code_stdout(python_code)
@@ -541,6 +610,10 @@ def _gen_typed_with_retry(slot: dict, python_code: str, templates: str) -> dict 
         ai = q["answer_index"]
         q["options"][ai] = actual                       # 정답 = snippet 실행값(§3)
         q["options"] = _ensure_distinct(q["options"], ai)   # 나머지 보기 서로 다르게
+        # 정답은 실행값으로 교정됐지만 해설은 LLM이 확정 전에 쓴 것 — 모순이면 정답 기준으로 다시 쓴다.
+        if not _explanation_consistent_with_answer(q.get("explanation", ""), actual):
+            print(f"[gen {tag}] 해설↔정답 불일치 감지 → 해설 교정")
+            q["explanation"] = _reconcile_explanation(python_code, q["stem"], actual)
         q["ct_skill"]   = slot["ct_skill"]
         q["code_kind"]  = slot["code_kind"]
         q["answer_type"] = slot["answer_type"]
@@ -1118,14 +1191,16 @@ def chat():
 
     # ct_skill·focus_points는 서버 보관 세트에서만 가져온다 (클라이언트발 focus_points 불신 — 노출 차단).
     ct_skill = data.get("ct_skill")   # 비민감 메타. 보관 세트가 있으면 그 값으로 덮어씀.
+    code_kind = data.get("code_kind")  # 비민감 메타(의사코드/파이썬). 보관 세트가 있으면 그 값으로 덮어씀.
     focus_points = None
     stored_q = _get_stored_question(session_id, problem_index)
     if stored_q:
         ct_skill = stored_q.get("ct_skill") or ct_skill
+        code_kind = stored_q.get("code_kind") or code_kind
         focus_points = stored_q.get("focus_points")
 
     system_prompt = llm.build_chat_system(
-        code_context, current_problem, ct_skill, focus_points
+        code_context, current_problem, ct_skill, focus_points, code_kind
     )
 
     if trigger in ("hint", "explain"):
